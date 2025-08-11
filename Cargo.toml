@@ -1,0 +1,11 @@
+[package]
+name = "vmk2rk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes = "0.8.4"
+ccm = "0.5.0"
+clap = { version = "4.5.42", features = ["derive"] }
+gpt = "4.1.0"
+itertools = "0.14.0"

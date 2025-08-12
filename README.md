@@ -1,6 +1,9 @@
 # vmk2rk
 A tool developped with anything but a brain. You could use it to retrieve a BitLocker Recovery Password by providing a VMK and the targeted filesystem.
 
+## How it works
+⚠️ Work in progress
+
 ## Dependencies 
 - [clap](https://docs.rs/clap/latest/clap/)
 - [aes](https://docs.rs/aes/latest/aes/)

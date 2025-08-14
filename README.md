@@ -2,8 +2,24 @@
 A tool developped with anything but a brain. You could use it to retrieve a BitLocker Recovery Password by providing a VMK and the targeted filesystem.
 
 ## Usage
-```bash
+```
+Usage: vmk2rk [OPTIONS] --vmk <Key>
 
+Options:
+  -v, --vmk <Key>
+          VMK, key used to decrypt the Recovery Password
+  -n, --nonce <Nonce>
+          Nonce used to decrypt the Recovery Password
+  -m, --mac <MAC>
+          MAC used to decrypt the Recovery Password
+  -p, --payload <Payload>
+          Payload containing the encrypted Recovery Password
+  -d, --disk <DISKPATH>
+          Disk to retrieve the nonce, MAC and encrypted Recovery Password
+  -h, --help
+          Print help (see a summary with '-h')
+  -V, --version
+          Print version
 ```
 
 ## How it works

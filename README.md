@@ -2,6 +2,11 @@
 A tool developped with anything but a brain. You could use it to retrieve a BitLocker Recovery Password by providing a VMK and the targeted filesystem.
 
 ## Usage
+Start by building it : 
+```bash
+cargo build -r 
+```
+Then simply provide a `VMK` and a `block/disk image file path` or a `nonce`, a `MAC` and a `paylaod`. 
 ```
 Usage: vmk2rk [OPTIONS] --vmk <Key>
 

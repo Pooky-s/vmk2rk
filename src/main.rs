@@ -26,7 +26,7 @@ const LB_SIZE: LogicalBlockSize = LogicalBlockSize::Lb512;
 #[command(
     version,
     about,
-    long_about = "Demonstration of Recovery Password retrieval using a VMK and metadata."
+    long_about = "Recovery Password retrieval tool using a VMK and metadata from a disk."
 )]
 struct Cli {
     /// VMK, key used to decrypt the Recovery Password

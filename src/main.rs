@@ -255,11 +255,11 @@ fn find_fve_metadata_block(disk: String) -> u64 {
             || &vbr[0..11] == VISTA_SIGNATURE
             || &vbr[0..11] == TOGO_SIGNATURE
         {
-            println!("[i] The partition {} appears to be encrypted. Volume headers starts at 0x{start_byte_offset:x}",index+1);
+            println!("[i] The partition {} appears to be encrypted. Volume headers begins at 0x{start_byte_offset:x}",index+1);
             let mut offset_metadata_block: [u8; 8] = [0; 8];
             offset_metadata_block.copy_from_slice(&vbr[176..184]);
             println!(
-                "[i] Address of the first FVE metadata block is 0x{:x}",
+                "[i] The address of the first FVE metadata block is 0x{:x}",
                 start_byte_offset + u64::from_le_bytes(offset_metadata_block)
             );
             offset = start_byte_offset + u64::from_le_bytes(offset_metadata_block);
@@ -274,7 +274,6 @@ fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
     let mut get_size = [0u8; 10];
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.read_exact(&mut get_size).unwrap();
-    println!("[i] Metadata header offset : {offset:x}");
 
     // Retrieves metadata header size
     let mut size_raw: [u8; 2] = [0; 2];
@@ -316,7 +315,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, Stri
     let mut mac = String::from("");
     let mut payload = String::from("");
     let mut get_size = [0u8; 0x2];
-    println!("[i] Metadata entries offset : {offset:x}");
+    println!("[i] The offset of the metadata entries is at 0x{offset:x}");
     let mut blocks_to_read = true;
     let mut cursor = offset.clone();
 

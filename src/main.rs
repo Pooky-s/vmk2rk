@@ -27,16 +27,9 @@ enum EntryType {
     VMK,
     FVEK,
     Validation,
-    //NotDocumented
     StartupKey,
     Description,
-    //NotDocumented
-    //NotDocumented
-    //NotDocumented
     FVEKBackup,
-    //NotDocumented
-    //NotDocumented
-    //NotDocumented
     VolumeHeaderBlock
 }
 
@@ -69,8 +62,6 @@ enum DatumType {
     Update,
     Error,
     NotDocumented,
-    //NotDocumented
-    //NotDocumented
     OffsetAndSize
 }
 

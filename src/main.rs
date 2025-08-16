@@ -2,9 +2,7 @@
 #![feature(slice_as_array)]
 use aes::Aes256;
 use ccm::{
-    Ccm,
-    aead::{Aead, KeyInit, generic_array::GenericArray},
-    consts::{U12, U16},
+    aead::{generic_array::GenericArray, Aead, KeyInit}, consts::{U12, U16}, Ccm, Nonce
 };
 use clap::Parser;
 use gpt::{GptConfig, disk::LogicalBlockSize};
@@ -21,6 +19,102 @@ const VISTA_SIGNATURE: &[u8] = b"\xeb\x52\x90-FVE-FS-";
 const SEVEN_SIGNATURE: &[u8] = b"\xeb\x58\x90-FVE-FS-";
 const TOGO_SIGNATURE: &[u8] = b"\xeb\x58\x90MSWIN4.1";
 const LB_SIZE: LogicalBlockSize = LogicalBlockSize::Lb512;
+
+#[derive(Debug, PartialEq)]
+enum EntryType {
+    None,
+    NotDocumented,
+    VMK,
+    FVEK,
+    Validation,
+    //NotDocumented
+    StartupKey,
+    Description,
+    //NotDocumented
+    //NotDocumented
+    //NotDocumented
+    FVEKBackup,
+    //NotDocumented
+    //NotDocumented
+    //NotDocumented
+    VolumeHeaderBlock
+}
+
+fn get_entry_type(entry_type: u16) -> EntryType {
+    match entry_type {
+        0x0000 => EntryType::None,
+        0x0002 => EntryType::VMK,
+        0x0003 => EntryType::FVEK,
+        0x0004 => EntryType::Validation,
+        0x0006 => EntryType::StartupKey,
+        0x0007 => EntryType::Description,
+        0x000b => EntryType::FVEKBackup,
+        0x000f => EntryType::VolumeHeaderBlock,
+        _ => {println!("{entry_type:0>4x}");EntryType::NotDocumented}
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum DatumType {
+    Erased,
+    Key,
+    UnicodeString,
+    StretchKey,
+    UseKey,
+    AESCCMEncryptedKey,
+    TPMEncodedKey,
+    Validation,
+    VMK,
+    ExternalKey,
+    Update,
+    Error,
+    NotDocumented,
+    //NotDocumented
+    //NotDocumented
+    OffsetAndSize
+}
+
+fn get_datum_type(datum_type: u16) -> DatumType {
+    match datum_type {
+        0x0000 => DatumType::Erased,
+        0x0001 => DatumType::Key,
+        0x0002 => DatumType::UnicodeString,
+        0x0003 => DatumType::StretchKey,
+        0x0004 => DatumType::UseKey,
+        0x0005 => DatumType::AESCCMEncryptedKey,
+        0x0006 => DatumType::TPMEncodedKey,
+        0x0007 => DatumType::Validation,
+        0x0008 => DatumType::VMK,
+        0x0009 => DatumType::ExternalKey,
+        0x000a => DatumType::Update,
+        0x000b => DatumType::Error,
+        0x000f => DatumType::OffsetAndSize,
+        _ => {println!("{datum_type:0>4x}");DatumType::NotDocumented}
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum ProtectorType {
+    ClearKey,
+    TPM,
+    StartupKey,
+    TPMAndPin,
+    RecoveryPassword,
+    Password,
+    NotDocumented
+}
+
+fn get_protector_type(protector_type: u16) -> ProtectorType {
+    match protector_type {
+        0x0000 => ProtectorType::ClearKey,
+        0x0100 => ProtectorType::TPM,
+        0x0200 => ProtectorType::StartupKey,
+        0x0500 => ProtectorType::TPMAndPin,
+        0x0800 => ProtectorType::RecoveryPassword,
+        0x2000 => ProtectorType::Password,
+        _ => {println!("{protector_type:0>4x}");ProtectorType::NotDocumented}
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -48,6 +142,10 @@ struct Cli {
     /// Disk to retrieve the nonce, MAC and encrypted Recovery Password
     #[arg(short, long, value_name = "DISKPATH")]
     disk: Option<String>,
+
+    /// Create BEK (BitLocker External Key) file if the key protector is configured on the provided disk (Not implemented yet)
+    #[arg(short, long)]
+    bek: bool,
 }
 
 // AES-256-CCM init
@@ -157,7 +255,7 @@ fn find_fve_metadata_block(disk: String) -> u64 {
             || &vbr[0..11] == VISTA_SIGNATURE
             || &vbr[0..11] == TOGO_SIGNATURE
         {
-            println!("[i] The partition {index} appears to be encrypted. Volume headers starts at 0x{start_byte_offset:x}");
+            println!("[i] The partition {} appears to be encrypted. Volume headers starts at 0x{start_byte_offset:x}",index+1);
             let mut offset_metadata_block: [u8; 8] = [0; 8];
             offset_metadata_block.copy_from_slice(&vbr[176..184]);
             println!(
@@ -172,7 +270,7 @@ fn find_fve_metadata_block(disk: String) -> u64 {
 
 fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
     // Returns the metadata entries offset
-    let mut metadata_addr: Vec<u64> = Vec::new();
+    let mut metadata_addr = 0u64;
     let mut get_size = [0u8; 10];
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.read_exact(&mut get_size).unwrap();
@@ -189,7 +287,7 @@ fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
         file.seek(SeekFrom::Start(offset)).unwrap();
         file.read_exact(&mut header).unwrap();
 
-        // Retrieves volume name and other information
+        // Retrieves volume name, letter and date of encryption (?)
         let mut volume_name_size_raw: [u8; 2] = [0; 2];
         volume_name_size_raw.clone_from_slice(&header[0x70..0x72]);
         let volume_name_size = u16::from_le_bytes(volume_name_size_raw);
@@ -208,15 +306,15 @@ fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
         );
         println!("[i] Metadata version : {version}");
 
-        metadata_addr.append(&mut vec![
-            offset + 0x78 + u64::from(u16::from_le_bytes(volume_name_size_raw) - 8),
-        ]);
+        metadata_addr = offset + 0x78 + u64::from(u16::from_le_bytes(volume_name_size_raw) - 8);
     }
-    metadata_addr[0]
+    metadata_addr
 }
 
-fn parse_metadata_entries(file: &mut File, offset: u64) -> Vec<String> {
-    let mut key_protector_data: Vec<String> = Vec::new();
+fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, String) {
+    let mut nonce = String::from("");
+    let mut mac = String::from("");
+    let mut payload = String::from("");
     let mut get_size = [0u8; 0x2];
     println!("[i] Metadata entries offset : {offset:x}");
     let mut blocks_to_read = true;
@@ -240,28 +338,28 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> Vec<String> {
 
             let mut entry_type_raw: [u8; 2] = [0; 2];
             let mut datum_raw: [u8; 2] = [0; 2];
-
+            
             entry_type_raw.copy_from_slice(&metadata_entry[0x02..0x04]);
             datum_raw.copy_from_slice(&metadata_entry[0x04..0x06]);
 
-            let entry_type = u16::from_le_bytes(entry_type_raw);
-            let datum = u16::from_le_bytes(datum_raw);
+            let entry_type = get_entry_type(u16::from_le_bytes(entry_type_raw));
+            let datum = get_datum_type(u16::from_le_bytes(datum_raw));
 
-            if entry_type == 0x02 && datum == 0x08 {
+            if entry_type == EntryType::VMK && datum == DatumType::VMK {
                 println!(
                     "[i] Found an entry that might be the nested entry containing the encrypted Recovery Password. Continuing..."
                 );
                 let mut protection_type_raw: [u8; 2] = [0; 2];
                 protection_type_raw.copy_from_slice(
-                    &metadata_entry[0x08 + 0x10 + 0x08 + 0x02..0x08 + 0x10 + 0x08 + 0x02 + 0x02],
+                    &metadata_entry[0x22..0x24],
                 );
-                let protection_type = u16::from_le_bytes(protection_type_raw);
+                let protection_type = get_protector_type(u16::from_le_bytes(protection_type_raw));
 
-                if protection_type == 0x0800 {
+                if protection_type == ProtectorType::RecoveryPassword {
                     println!(
                         "[i] This entry appears to contain the encrypted Recovery Password. Continuing..."
                     );
-                    let mut salt_offset = usize::from(0x08u16 + 0x14u16);
+                    let mut offset = usize::from(0x08u16 + 0x14u16);
 
                     let mut key_protector_type_raw: [u8; 2] = [0; 2];
                     let mut key_protector_size = 0u16;
@@ -270,46 +368,38 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> Vec<String> {
                     key_protector_type_raw.copy_from_slice(
                         &metadata_entry[0x28..0x2a],
                     );
-                    while u16::from_le_bytes(key_protector_type_raw) != 0x03 {
+                    while get_datum_type(u16::from_le_bytes(key_protector_type_raw)) != DatumType::StretchKey {
                         key_protector_size_raw.copy_from_slice(
                             &metadata_entry[0x24..0x26],
                         );
                         key_protector_size = u16::from_le_bytes(key_protector_size_raw);
-                        salt_offset += usize::from(key_protector_size);
+                        offset += usize::from(key_protector_size);
                         key_protector_type_raw.copy_from_slice(
                             &metadata_entry[0x28 + usize::from(key_protector_size)..0x2a + usize::from(key_protector_size)],
                         );
                     }
 
                     key_protector_size_raw.copy_from_slice(
-                        &metadata_entry[0x24 + salt_offset..0x26 + salt_offset],
+                        &metadata_entry[0x24 + offset..0x26 + offset],
                     );
                     key_protector_size = u16::from_le_bytes(key_protector_size_raw);
                     let mut key_protector = vec![0u8; usize::from(key_protector_size)];
                     key_protector.copy_from_slice(
-                        &metadata_entry[0x24 + salt_offset..0x24 + salt_offset + usize::from(key_protector_size)],
+                        &metadata_entry[0x24 + offset..0x24 + offset + usize::from(key_protector_size)],
                     );
 
-                    let mut nonce: [u8; 12] = [0; 12];
-                    let mut mac: [u8; 16] = [0; 16];
-                    let mut payload = vec![0u8; usize::from(key_protector_size - 36)];
+                    let mut nonce_bytes: [u8; 12] = [0; 12];
+                    let mut mac_bytes: [u8; 16] = [0; 16];
+                    let mut payload_bytes = vec![0u8; usize::from(key_protector_size - 36)];
 
-                    nonce.copy_from_slice(&key_protector[0x08..0x14]);
-                    mac.copy_from_slice(&key_protector[0x14..0x24]);
-                    payload.copy_from_slice(
+                    nonce_bytes.copy_from_slice(&key_protector[0x08..0x14]);
+                    mac_bytes.copy_from_slice(&key_protector[0x14..0x24]);
+                    payload_bytes.copy_from_slice(
                         &key_protector[0x24..0x24 + (usize::from(key_protector_size) - 36)],
                     );
-
-                    println!(
-                        "[r] Successfully retrieved information :\n\n[i] Nonce :\t{}\n[i] MAC :\t{}\n[i] Payload :\t{}\n",
-                        encode_hex(&nonce),
-                        encode_hex(&mac),
-                        encode_hex(&payload)
-                    );
-
-                    key_protector_data.append(&mut vec![encode_hex(&nonce)]);
-                    key_protector_data.append(&mut vec![encode_hex(&mac)]);
-                    key_protector_data.append(&mut vec![encode_hex(&payload)]);
+                    nonce = encode_hex(&nonce_bytes);
+                    mac = encode_hex(&mac_bytes);
+                    payload = encode_hex(&payload_bytes);
                     break;
                 } else {
                     println!(
@@ -325,13 +415,14 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> Vec<String> {
             exit(1);
         }
     }
-    key_protector_data
+    return (nonce, mac, payload);
 }
 
 fn main() {
     let cli = Cli::parse();
     let disk = cli.disk;
     let vmk = cli.vmk;
+    let (mut nonce, mut mac, mut payload) = (String::from(""),String::from(""),String::from(""));
     let mut recovery_pass = Vec::new();
 
     match disk {
@@ -344,28 +435,21 @@ fn main() {
             file.seek(SeekFrom::Start(offset + 10)).unwrap();
             let mut version = [0u8; 2];
             let _ = file.read_exact(&mut version).is_ok();
-            if encode_hex(&version) == "0200" || encode_hex(&version) == "0100" {
-                let offset = get_metadata_entries_offset(&mut file, offset);
-                println!("[i] Provided information : \n\n[i] VMK :\t{vmk}\n");
-                let key_protector_data = parse_metadata_entries(&mut file, offset);
+            if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
+                offset = get_metadata_entries_offset(&mut file, offset);
+                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset);
                 recovery_pass = decrypt_recovery_password(
-                    vmk,
-                    key_protector_data[0].clone(),
-                    key_protector_data[1].clone(),
-                    key_protector_data[2].clone(),
+                    vmk.clone(),
+                    nonce.clone(),
+                    mac.clone(),
+                    payload.clone(),
                 );
             }
         }
         None => {
             println!("[i] No file selected. Continuing...");
             // Variables
-            let nonce = cli.nonce;
-            let mac = cli.mac;
-            let payload = cli.payload;
-
-            println!(
-                "[i] Provided information : \n\n[i] VMK :\t{vmk}\n[i] Nonce :\t{nonce}\n[i] MAC :\t{mac}\n[i] Payload :\t{payload}\n"
-            );
+            (nonce, mac, payload) = (cli.nonce, cli.mac, cli.payload);
 
             // Verifications
             if vmk.len() != 64 || nonce.len() != 24 || mac.len() != 32 || payload.len() != 56 {
@@ -374,11 +458,20 @@ fn main() {
                 );
                 exit(1)
             }
-            recovery_pass = decrypt_recovery_password(vmk, nonce, mac, payload);
+            recovery_pass = decrypt_recovery_password(vmk.clone(), nonce.clone(), mac.clone(), payload.clone());
         }
     }
+
+    println!(
+        "[i] Information to retrieve the Recovery Password : \n\n[i] VMK :\t{vmk}\n[i] Nonce :\t{nonce}\n[i] MAC :\t{mac}\n[i] Payload :\t{payload}\n"
+    );
+
     println!(
         "[r] Recovery Password :\t{:0>6?}",
         recovery_pass.iter().format("-")
     );
+
+    if cli.bek {
+        println!("I will soon make BEK files if it is among the key protectors of the given disk.");
+    }
 }

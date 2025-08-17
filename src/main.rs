@@ -13,6 +13,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::exit;
 use std::{fmt::Write, num::ParseIntError};
+use uuid::Uuid;
 
 // Declare constants (needed to verify the offset found)
 const VISTA_SIGNATURE: &[u8] = b"\xeb\x52\x90-FVE-FS-";
@@ -248,7 +249,10 @@ fn find_fve_metadata_block(disk: String) -> u64 {
         {
             println!("[i] The partition {} appears to be encrypted. Volume headers begins at 0x{start_byte_offset:x}",index+1);
             let mut offset_metadata_block: [u8; 8] = [0; 8];
+            //let mut volume_guid: [u8; 16] = [0; 16];
             offset_metadata_block.copy_from_slice(&vbr[176..184]);
+            //volume_guid.copy_from_slice(&vbr[160..176]);
+            //println!("[i] Volume GUID {:X} (?)",u128::from_le_bytes(volume_guid));
             println!(
                 "[i] The address of the first FVE metadata block is 0x{:x}",
                 start_byte_offset + u64::from_le_bytes(offset_metadata_block)
@@ -343,12 +347,18 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, Stri
                 protection_type_raw.copy_from_slice(
                     &metadata_entry[0x22..0x24],
                 );
+                let mut key_protector_guid_raw: [u8; 16] = [0; 16];
+                key_protector_guid_raw.copy_from_slice(
+                    &metadata_entry[0x8..0x18],
+                );
+                let guid =  Uuid::from_bytes_le(key_protector_guid_raw);
                 let protection_type = get_protector_type(u16::from_le_bytes(protection_type_raw));
 
                 if protection_type == ProtectorType::RecoveryPassword {
                     println!(
                         "[i] This entry appears to contain the encrypted Recovery Password. Continuing..."
                     );
+                    println!("[i] The Recovery Password has the following GUID : {}",guid.to_string().to_uppercase());
                     let mut offset = usize::from(0x08u16 + 0x14u16);
 
                     let mut key_protector_type_raw: [u8; 2] = [0; 2];

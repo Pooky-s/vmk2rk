@@ -9,3 +9,4 @@ ccm = "0.5.0"
 clap = { version = "4.5.42", features = ["derive"] }
 gpt = "4.1.0"
 itertools = "0.14.0"
+uuid = "1.18.0"

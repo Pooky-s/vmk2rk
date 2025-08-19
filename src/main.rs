@@ -209,6 +209,7 @@ fn decrypt_recovery_password(vmk: String, nonce: String, mac: String, payload: S
     let recovery_pass_raw = decode_hex(recovery_pass_hex).unwrap();
     let recovery_pass_raw_swapped = swap_endianness(&recovery_pass_raw);
     let _recovery_pass_hex_swapped = encode_hex(&recovery_pass_raw_swapped);
+
     format_recovery_key(&recovery_pass_raw_swapped)
 }
 
@@ -229,7 +230,7 @@ fn find_fve_metadata_block(disk: String) -> u64 {
         eprintln!("[!] No partitions found.");
         exit(1);
     }
-    println!("[i] Found {} GPT partitions.", partitions.len());
+    println!("[i] Reading GUID Partition Table.\n[i] Found {} GPT partitions.", partitions.len());
 
     for (index, part) in partitions.values().enumerate() {
         let start_byte_offset = match part.bytes_start(LB_SIZE) {
@@ -256,16 +257,12 @@ fn find_fve_metadata_block(disk: String) -> u64 {
             bitlocker_identifier_raw.copy_from_slice(&vbr[160..176]);
             let bitlocker_identifier = Uuid::from_bytes_le(bitlocker_identifier_raw);
             println!(
-                "[i] The partition {} appears to be encrypted. Volume headers begins at 0x{start_byte_offset:x}",
+                "[i] The partition {} appears to be encrypted. Volume headers begins at 0x{start_byte_offset:x}.",
                 index + 1
             );
             println!(
                 "[i] BitLocker identifier :\t{{{}}} ",
                 bitlocker_identifier.to_string().to_uppercase()
-            );
-            println!(
-                "[i] The address of the first FVE metadata block is 0x{:x}",
-                start_byte_offset + u64::from_le_bytes(offset_metadata_block)
             );
             offset = start_byte_offset + u64::from_le_bytes(offset_metadata_block);
         }
@@ -323,10 +320,12 @@ fn parse_key_protector_recovery_password(
         "[i] This entry contains the encrypted Recovery Password.\n[i] The Recovery Password has the following GUID :\t{{{}}}",
         guid.to_string().to_uppercase()
     );
+
     let mut offset = usize::from(0x08u16 + 0x14u16);
     let mut key_protector_type_raw: [u8; 2] = [0; 2];
     let mut _key_protector_size = 0u16;
     let mut key_protector_size_raw: [u8; 2] = [0; 2];
+
     key_protector_type_raw.copy_from_slice(&metadata_entry[0x28..0x2a]);
     while get_datum_type(u16::from_le_bytes(key_protector_type_raw)) != DatumType::StretchKey {
         key_protector_size_raw.copy_from_slice(&metadata_entry[0x24..0x26]);
@@ -337,23 +336,39 @@ fn parse_key_protector_recovery_password(
                 [0x28 + usize::from(_key_protector_size)..0x2a + usize::from(_key_protector_size)],
         );
     }
+
     key_protector_size_raw.copy_from_slice(&metadata_entry[0x24 + offset..0x26 + offset]);
     _key_protector_size = u16::from_le_bytes(key_protector_size_raw);
+
     let mut key_protector = vec![0u8; usize::from(_key_protector_size)];
     key_protector.copy_from_slice(
         &metadata_entry[0x24 + offset..0x24 + offset + usize::from(_key_protector_size)],
     );
+
     let mut nonce_bytes: [u8; 12] = [0; 12];
     let mut mac_bytes: [u8; 16] = [0; 16];
     let mut payload_bytes = vec![0u8; usize::from(_key_protector_size - 36)];
+
     nonce_bytes.copy_from_slice(&key_protector[0x08..0x14]);
     mac_bytes.copy_from_slice(&key_protector[0x14..0x24]);
     payload_bytes
         .copy_from_slice(&key_protector[0x24..0x24 + (usize::from(_key_protector_size) - 36)]);
+
     let nonce = encode_hex(&nonce_bytes);
     let mac = encode_hex(&mac_bytes);
     let payload = encode_hex(&payload_bytes);
+
     return (nonce, mac, payload);
+}
+
+fn parse_key_protector_startup_key(
+    guid: Uuid,
+    _metadata_entry: Vec<u8>,
+) {
+    println!(
+        "[i] A Startup Key appears to be configured. In a future release, the tool should be able to generate a BEK file based on the metadata.\n[i] The Startup Key has the following GUID :\t\t{{{}}}",
+        guid.to_string().to_uppercase()
+    );
 }
 
 fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, String) {
@@ -361,7 +376,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, Stri
     let mut _mac = String::from("");
     let mut _payload = String::from("");
     let mut get_size = [0u8; 0x2];
-    println!("[i] The offset of the metadata entries is at 0x{offset:x}");
+    println!("\n[i] Reading FVE Metadata entries.\n[i] The offset of the metadata entries is at 0x{offset:x}.");
     let mut cursor = offset.clone();
 
     loop {
@@ -402,16 +417,8 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, Stri
                 //println!("{key_protector_type:?}");
 
                 match key_protector_type {
-                    ProtectorType::RecoveryPassword => {
-                        (_nonce, _mac, _payload) =
-                            parse_key_protector_recovery_password(guid, metadata_entry)
-                    }
-                    ProtectorType::StartupKey => {
-                        println!(
-                            "[i] A Startup Key appears to be configured. In a future release the tool should be able to generate a BEK file based on the metadata.\n[i] The Startup Key has the following GUID :\t\t{{{}}}",
-                            guid.to_string().to_uppercase()
-                        );
-                    }
+                    ProtectorType::RecoveryPassword => (_nonce, _mac, _payload) = parse_key_protector_recovery_password(guid, metadata_entry),
+                    ProtectorType::StartupKey => parse_key_protector_startup_key(guid, metadata_entry),
                     _ => println!(
                         "[i] This entry contains a VMK protected using a {:?} Key Protector.\n[i] The Key Protector has the following GUID :\t\t{{{}}}",
                         key_protector_type,
@@ -421,7 +428,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, Stri
             };
             cursor += u64::from(u16::from_le_bytes(size_raw));
         } else {
-            eprintln!("[!] Something went wrong, the size retrieved appears to be incoherent.");
+            eprintln!("[!] The size of the retrieved entry appears to be incoherent, stopping.");
             break;
             //exit(1);
         }
@@ -446,13 +453,12 @@ fn main() {
             file.seek(SeekFrom::Start(offset + 10)).unwrap();
             let mut version = [0u8; 2];
             let _ = file.read_exact(&mut version).is_ok();
-            file.seek(SeekFrom::Start(offset + 72)).unwrap();
             file.seek(SeekFrom::Start(offset + 80)).unwrap();
             let mut volume_guid_raw = [0u8; 16];
             let _ = file.read_exact(&mut volume_guid_raw).is_ok();
             let volume_guid = Uuid::from_bytes_le(volume_guid_raw);
             println!(
-                "[i] Volume identifier :\t\t{{{}}}",
+                "\n[i] Reading FVE Metadata block 1 located at 0x{offset:x}.\n[i] Volume identifier :\t\t{{{}}}",
                 volume_guid.to_string().to_uppercase()
             );
             if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
@@ -478,13 +484,17 @@ fn main() {
                 );
                 exit(1)
             }
-            recovery_pass =
-                decrypt_recovery_password(vmk.clone(), nonce.clone(), mac.clone(), payload.clone());
+            recovery_pass = decrypt_recovery_password(
+                    vmk.clone(), 
+                    nonce.clone(), 
+                    mac.clone(), 
+                    payload.clone()
+                );
         }
     }
 
     println!(
-        "[i] Information to retrieve the Recovery Password : \n\n[i] VMK :\t{vmk}\n[i] Nonce :\t{nonce}\n[i] MAC :\t{mac}\n[i] Payload :\t{payload}\n"
+        "\n[i] Information to retrieve the Recovery Password : \n\n[i] VMK :\t{vmk}\n[i] Nonce :\t{nonce}\n[i] MAC :\t{mac}\n[i] Payload :\t{payload}\n"
     );
 
     println!(

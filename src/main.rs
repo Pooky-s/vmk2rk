@@ -16,6 +16,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::exit;
 use std::{fmt::Write, num::ParseIntError};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 // Declare constants (needed to verify the offset found)
@@ -361,6 +362,32 @@ fn parse_key_protector_recovery_password(
     return (nonce, mac, payload);
 }
 
+fn filetime_to_unix(filetime_bytes: [u8; 8]) -> u64 {
+    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
+    const EPOCH_DIFF: u64 = 11_644_473_600;
+    const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
+
+    // Convert bytes into 64-bit value (little-endian)
+    let filetime_val = u64::from_le_bytes(filetime_bytes);
+
+    // Convert from 100ns intervals to seconds
+    let total_secs = filetime_val / HUNDRED_NS_PER_SEC;
+
+    // Subtract Windows→Unix epoch difference
+    total_secs - EPOCH_DIFF
+}
+
+fn unix_to_filetime(unix_time: u64) -> [u8; 8] {
+    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
+    const EPOCH_DIFF: u64 = 11_644_473_600;
+    const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
+
+    let filetime_intervals: u64 = (unix_time + EPOCH_DIFF) * HUNDRED_NS_PER_SEC;
+
+    // Convert into little-endian byte array
+    filetime_intervals.to_le_bytes()
+}
+
 fn parse_key_protector_startup_key(
     guid: Uuid,
     _metadata_entry: Vec<u8>,
@@ -369,6 +396,34 @@ fn parse_key_protector_startup_key(
         "[i] A Startup Key appears to be configured. In a future release, the tool should be able to generate a BEK file based on the metadata.\n[i] The Startup Key has the following GUID :\t\t{{{}}}",
         guid.to_string().to_uppercase()
     );
+    let mut initial_bek_headers : [u8; 48] = [
+        // BEK file's size (calculated at the end of the generation of the file content)
+        0xff,0x00,0x00,0x00,
+        // Version (always 0x0001)
+        0x01,0x00,0x00,0x00,
+        // Header's size (always 48)
+        0x30,0x00,0x00,0x00,
+        // Copy of BEK file's size 
+        0xff,0x00,0x00,0x00,
+        // Key protector's GUID (will be retrieved)
+        0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+        // Nonce counter
+        0x01,0x00,0x00,0x00,
+        // Encryption type (0x0000 because it is an external key)
+        0x00,0x00,0x00,0x00,
+        // Creation time (will be modified to reflect the time at which the file is created)
+        0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+    ];
+    let mut guid_raw : [u8; 16] = [0u8; 16];
+    guid_raw.copy_from_slice(&initial_bek_headers[16..32]);
+    initial_bek_headers[16..32].copy_from_slice(&guid.to_bytes_le());
+    println!("[i] Settting GUID : \n\tFrom :\t{} | {:0>2x?}\n\tTo :\t{} | {:0>2x?}",Uuid::from_bytes_le(guid_raw),guid_raw,guid,guid.to_bytes_le());
+
+
+    let mut filetime_raw : [u8; 8] = [0u8; 8];
+    filetime_raw.copy_from_slice(&initial_bek_headers[40..48]);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    println!("[i] Settting GUID : \n\tFrom :\t{:?} | {:0>2x?}\n\tTo :\t{:?} | {:0>2x?}",filetime_to_unix(filetime_raw),filetime_raw,now,unix_to_filetime(now));
 }
 
 fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, String) {

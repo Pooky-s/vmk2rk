@@ -147,6 +147,33 @@ struct Cli {
 // AES-256-CCM init
 pub type Aes256Ccm = Ccm<Aes256, U16, U12>;
 
+// Utils
+fn filetime_to_unix(filetime_bytes: [u8; 8]) -> u64 {
+    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
+    const EPOCH_DIFF: u64 = 11_644_473_600;
+    const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
+
+    // Convert bytes into 64-bit value (little-endian)
+    let filetime_val = u64::from_le_bytes(filetime_bytes);
+
+    // Convert from 100ns intervals to seconds
+    let total_secs = filetime_val / HUNDRED_NS_PER_SEC;
+
+    // Subtract Windows→Unix epoch difference
+    total_secs - EPOCH_DIFF
+}
+
+fn unix_to_filetime(unix_time: u64) -> [u8; 8] {
+    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
+    const EPOCH_DIFF: u64 = 11_644_473_600;
+    const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
+
+    let filetime_intervals: u64 = (unix_time + EPOCH_DIFF) * HUNDRED_NS_PER_SEC;
+
+    // Convert into little-endian byte array
+    filetime_intervals.to_le_bytes()
+}
+
 pub fn decode_hex(s: &str) -> Result<Vec<u8>, ParseIntError> {
     (0..s.len())
         .step_by(2)
@@ -171,6 +198,7 @@ pub fn swap_endianness(vec: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+// Internal functions
 fn format_recovery_key(vec: &[u8]) -> Vec<u32> {
     // Takes each part of the recovery password and multiply it by 11
     vec.chunks_exact(2)
@@ -362,32 +390,6 @@ fn parse_key_protector_recovery_password(
     return (nonce, mac, payload);
 }
 
-fn filetime_to_unix(filetime_bytes: [u8; 8]) -> u64 {
-    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
-    const EPOCH_DIFF: u64 = 11_644_473_600;
-    const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
-
-    // Convert bytes into 64-bit value (little-endian)
-    let filetime_val = u64::from_le_bytes(filetime_bytes);
-
-    // Convert from 100ns intervals to seconds
-    let total_secs = filetime_val / HUNDRED_NS_PER_SEC;
-
-    // Subtract Windows→Unix epoch difference
-    total_secs - EPOCH_DIFF
-}
-
-fn unix_to_filetime(unix_time: u64) -> [u8; 8] {
-    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
-    const EPOCH_DIFF: u64 = 11_644_473_600;
-    const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
-
-    let filetime_intervals: u64 = (unix_time + EPOCH_DIFF) * HUNDRED_NS_PER_SEC;
-
-    // Convert into little-endian byte array
-    filetime_intervals.to_le_bytes()
-}
-
 fn parse_key_protector_startup_key(
     guid: Uuid,
     _metadata_entry: Vec<u8>,
@@ -396,7 +398,7 @@ fn parse_key_protector_startup_key(
         "[i] A Startup Key appears to be configured. In a future release, the tool should be able to generate a BEK file based on the metadata.\n[i] The Startup Key has the following GUID :\t\t{{{}}}",
         guid.to_string().to_uppercase()
     );
-    let mut initial_bek_headers : [u8; 48] = [
+    let initial_bek_headers : [u8; 48] = [
         // BEK file's size (calculated at the end of the generation of the file content)
         0xff,0x00,0x00,0x00,
         // Version (always 0x0001)
@@ -414,16 +416,24 @@ fn parse_key_protector_startup_key(
         // Creation time (will be modified to reflect the time at which the file is created)
         0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
     ];
+    let mut bek_headers = [0u8; 48];
+    bek_headers.copy_from_slice(&initial_bek_headers[0..48]);
+
+    // Processing GUID
     let mut guid_raw : [u8; 16] = [0u8; 16];
-    guid_raw.copy_from_slice(&initial_bek_headers[16..32]);
-    initial_bek_headers[16..32].copy_from_slice(&guid.to_bytes_le());
+    guid_raw.copy_from_slice(&bek_headers[16..32]);
+    bek_headers[16..32].copy_from_slice(&guid.to_bytes_le());
     println!("[i] Settting GUID : \n\tFrom :\t{} | {:0>2x?}\n\tTo :\t{} | {:0>2x?}",Uuid::from_bytes_le(guid_raw),guid_raw,guid,guid.to_bytes_le());
 
-
+    // Processing FILETIME
     let mut filetime_raw : [u8; 8] = [0u8; 8];
-    filetime_raw.copy_from_slice(&initial_bek_headers[40..48]);
+    filetime_raw.copy_from_slice(&bek_headers[40..48]);
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    println!("[i] Settting GUID : \n\tFrom :\t{:?} | {:0>2x?}\n\tTo :\t{:?} | {:0>2x?}",filetime_to_unix(filetime_raw),filetime_raw,now,unix_to_filetime(now));
+    bek_headers[40..48].copy_from_slice(&unix_to_filetime(now));
+    println!("[i] Settting FILETIME : \n\tFrom :\t{:?} | {:0>2x?}\n\tTo :\t{:?} | {:0>2x?}",filetime_to_unix(filetime_raw),filetime_raw,now,unix_to_filetime(now));
+
+    // Printing BEK header
+    println!("[i] BEK header : \n\tFrom :\t{:0>2x?}\n\tTo :\t{:0>2x?}",initial_bek_headers,bek_headers);
 }
 
 fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, String) {

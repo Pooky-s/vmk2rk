@@ -392,7 +392,8 @@ fn parse_key_protector_recovery_password(
 
 fn parse_key_protector_startup_key(
     guid: Uuid,
-    _metadata_entry: Vec<u8>,
+    metadata_entry: Vec<u8>,
+    vmk: String
 ) {
     println!(
         "[i] A Startup Key appears to be configured. In a future release, the tool should be able to generate a BEK file based on the metadata.\n[i] The Startup Key has the following GUID :\t\t{{{}}}",
@@ -434,15 +435,62 @@ fn parse_key_protector_startup_key(
 
     // Printing BEK header
     println!("[i] BEK header : \n\tFrom :\t{:0>2x?}\n\tTo :\t{:0>2x?}",initial_bek_headers,bek_headers);
+
+    // Retrieve MAC, nonce and encrypted startup key from FVE Metadata Entry
+    let mut nonce_raw = [0u8; 12];
+    let mut mac_raw = [0u8; 16];
+    let mut payload_raw = [0u8; 44];
+    let mut offset: usize = 0x00;
+    let mut size_sub_entry = [0u8;2];
+    loop {
+        size_sub_entry.copy_from_slice(&metadata_entry[0x24+offset..0x24+offset+0x02]);
+        let mut sub_entry = vec![0u8; usize::from(u16::from_le_bytes(size_sub_entry))];
+        sub_entry.copy_from_slice(&metadata_entry[0x24+offset..0x24+offset+usize::from(u16::from_le_bytes(size_sub_entry))]);
+        if sub_entry[0x04..0x06] == [0x04,0x00] {
+            println!("[i] Found the sub-entry containing the startup key.");
+            println!("[i] Sub-entry :\t{:0>2x?}", sub_entry);
+            nonce_raw.copy_from_slice(&sub_entry[0x14..0x14+12]);
+            mac_raw.copy_from_slice(&sub_entry[0x20..0x20+16]);
+            payload_raw.copy_from_slice(&sub_entry[0x30..0x30+44]);
+            println!("[i] Nonce :\t{:0>2x?}", nonce_raw);
+            println!("[i] MAC :\t{:0>2x?}", mac_raw);
+            println!("[i] Payload :\t{:0>2x?}", payload_raw);
+            break
+        } else {
+            offset+=usize::from(u16::from_le_bytes(size_sub_entry));
+        }
+        //nonce_raw.copy_from_slice(&metadata_entry[0x00..0x02]);
+    }
+
+    let vmk_raw = decode_hex(&vmk).unwrap();
+    let cipher = Aes256Ccm::new_from_slice(&vmk_raw).unwrap();
+    let nonce_bytes: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_raw);
+    let payload_mac = &[payload_raw.to_vec(),mac_raw.to_vec()].concat();
+    let decrypted = cipher.decrypt(nonce_bytes, payload_mac.as_ref());
+
+    println!("[i] VMK :\t\t{}",vmk);
+
+    let mut plaintext = match decrypted {
+        Ok(text) => encode_hex(&text),
+        Err(error) => {
+            eprintln!(
+                "[!] {error:?} :\tThere was a problem decrypting the payload. This may be due to invalid information."
+            );
+            exit(1);
+        }
+    };
+    plaintext = plaintext[24..plaintext.len()].to_string();
+    println!("[i] Startup Key :\t{}",plaintext);
 }
 
-fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, String) {
+fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String) -> (String, String, String) {
     let mut _nonce = String::from("");
     let mut _mac = String::from("");
     let mut _payload = String::from("");
     let mut get_size = [0u8; 0x2];
-    println!("\n[i] Reading FVE Metadata entries.\n[i] The offset of the metadata entries is at 0x{offset:x}.");
     let mut cursor = offset.clone();
+
+    println!("\n[i] Reading FVE Metadata entries.\n[i] The offset of the metadata entries is at 0x{offset:x}.");
 
     loop {
         // Retrieves key protector size
@@ -478,12 +526,12 @@ fn parse_metadata_entries(file: &mut File, offset: u64) -> (String, String, Stri
                 key_protector_guid_raw.copy_from_slice(&metadata_entry[0x8..0x18]);
                 let guid = Uuid::from_bytes_le(key_protector_guid_raw);
                 let key_protector_type =
-                    get_protector_type(u16::from_le_bytes(key_protector_type_raw));
-                //println!("{key_protector_type:?}");
+                    get_protector_type(u16::from_le_bytes(key_protector_type_raw)
+                );
 
                 match key_protector_type {
                     ProtectorType::RecoveryPassword => (_nonce, _mac, _payload) = parse_key_protector_recovery_password(guid, metadata_entry),
-                    ProtectorType::StartupKey => parse_key_protector_startup_key(guid, metadata_entry),
+                    ProtectorType::StartupKey => parse_key_protector_startup_key(guid, metadata_entry, vmk.clone()),
                     _ => println!(
                         "[i] This entry contains a VMK protected using a {:?} Key Protector.\n[i] The Key Protector has the following GUID :\t\t{{{}}}",
                         key_protector_type,
@@ -528,7 +576,7 @@ fn main() {
             );
             if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
                 offset = get_metadata_entries_offset(&mut file, offset);
-                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset);
+                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset,vmk.clone());
                 recovery_pass = decrypt_recovery_password(
                     vmk.clone(),
                     nonce.clone(),

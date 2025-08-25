@@ -29,8 +29,8 @@ const LB_SIZE: LogicalBlockSize = LogicalBlockSize::Lb512;
 enum EntryType {
     None,
     NotDocumented,
-    VMK,
-    FVEK,
+    Vmk,
+    Fvek,
     Validation,
     StartupKey,
     Description,
@@ -41,8 +41,8 @@ enum EntryType {
 fn get_entry_type(entry_type: u16) -> EntryType {
     match entry_type {
         0x0000 => EntryType::None,
-        0x0002 => EntryType::VMK,
-        0x0003 => EntryType::FVEK,
+        0x0002 => EntryType::Vmk,
+        0x0003 => EntryType::Fvek,
         0x0004 => EntryType::Validation,
         0x0006 => EntryType::StartupKey,
         0x0007 => EntryType::Description,
@@ -62,7 +62,7 @@ enum DatumType {
     AESCCMEncryptedKey,
     TPMEncodedKey,
     Validation,
-    VMK,
+    Vmk,
     ExternalKey,
     Update,
     Error,
@@ -80,7 +80,7 @@ fn get_datum_type(datum_type: u16) -> DatumType {
         0x0005 => DatumType::AESCCMEncryptedKey,
         0x0006 => DatumType::TPMEncodedKey,
         0x0007 => DatumType::Validation,
-        0x0008 => DatumType::VMK,
+        0x0008 => DatumType::Vmk,
         0x0009 => DatumType::ExternalKey,
         0x000a => DatumType::Update,
         0x000b => DatumType::Error,
@@ -92,7 +92,7 @@ fn get_datum_type(datum_type: u16) -> DatumType {
 #[derive(Debug, PartialEq)]
 enum ProtectorType {
     ClearKey,
-    TPM,
+    Tpm,
     StartupKey,
     TPMAndPin,
     RecoveryPassword,
@@ -103,7 +103,7 @@ enum ProtectorType {
 fn get_protector_type(protector_type: u16) -> ProtectorType {
     match protector_type {
         0x0000 => ProtectorType::ClearKey,
-        0x0100 => ProtectorType::TPM,
+        0x0100 => ProtectorType::Tpm,
         0x0200 => ProtectorType::StartupKey,
         0x0500 => ProtectorType::TPMAndPin,
         0x0800 => ProtectorType::RecoveryPassword,
@@ -387,7 +387,7 @@ fn parse_key_protector_recovery_password(
     let mac = encode_hex(&mac_bytes);
     let payload = encode_hex(&payload_bytes);
 
-    return (nonce, mac, payload);
+    (nonce, mac, payload)
 }
 
 fn parse_key_protector_startup_key(
@@ -534,7 +534,7 @@ fn parse_key_protector_startup_key(
 
     let bek_file = [bek_headers.to_vec(), bek_content.to_vec()].concat();
     // println!("[i] BEK file :\n{:0>2x?}", bek_file);
-    let filename = String::from(guid.to_string()+&".bek");
+    let filename = guid.to_string()+".bek";
     let new_file = File::create(filename.clone());
     match new_file {
         Ok(mut file) => {
@@ -553,7 +553,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: Cli) -
     let mut _mac = String::from("");
     let mut _payload = String::from("");
     let mut get_size = [0u8; 0x2];
-    let mut cursor = offset.clone();
+    let mut cursor = offset;
 
     println!("\n[i] Reading FVE Metadata entries.\n[i] The offset of the metadata entries is at 0x{offset:x}.");
 
@@ -583,7 +583,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: Cli) -
             let datum_type = get_datum_type(u16::from_le_bytes(datum_raw));
 
             //println!("[i] Entry type :\t\t{entry_type:?}\n[i] Datum type :\t\t{datum_type:?}");
-            if entry_type == EntryType::VMK && datum_type == DatumType::VMK {
+            if entry_type == EntryType::Vmk && datum_type == DatumType::Vmk {
                 println!("[i] Found an entry containing a Key Protector. Continuing...");
                 let mut key_protector_type_raw: [u8; 2] = [0; 2];
                 key_protector_type_raw.copy_from_slice(&metadata_entry[0x22..0x24]);
@@ -621,7 +621,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: Cli) -
             //exit(1);
         }
     }
-    return (_nonce, _mac, _payload);
+    (_nonce, _mac, _payload)
 }
 
 fn main() {

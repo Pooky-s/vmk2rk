@@ -116,10 +116,10 @@ fn get_protector_type(protector_type: u16) -> ProtectorType {
 #[command(
     version,
     about,
-    long_about = "Recovery Password retrieval tool using a VMK and metadata from a disk."
+    long_about = "Key Protectors retrieval tool using a VMK and metadata from a disk."
 )]
 struct Cli {
-    /// VMK, key used to decrypt the Recovery Password
+    /// VMK, key used to decrypt key protectors
     #[arg(required = true, short, long, value_name = "Key", default_value_t = String::from("7e63180cb55e15fa62ff4a2cac1bec4ca2ae145b8b92b59b8674e1f2169bcc8d"))]
     vmk: String,
 
@@ -135,11 +135,11 @@ struct Cli {
     #[arg(short, long, value_name = "Payload", default_value_t = String::from("487c4e3f137759409f626bae6e39d24e59d283b6b1e19db6678646ce"))]
     payload: String,
 
-    /// Disk to retrieve the nonce, MAC and encrypted Recovery Password
+    /// Disk from which Key Protectors are retrieved 
     #[arg(short, long, value_name = "DISKPATH")]
     disk: Option<String>,
 
-    /// Create BEK (BitLocker External Key) file if the key protector is configured on the provided disk (Not implemented yet)
+    /// CCreate BEK (BitLocker External Key) file if the Key Protector is configured on the provided disk
     #[arg(short, long)]
     bek: bool,
 }

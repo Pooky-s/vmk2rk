@@ -1,18 +1,18 @@
 # vmk2rk
-A tool developped with anything but a brain. You could use it to retrieve a BitLocker Recovery Password by providing a VMK and the targeted filesystem.
+A tool developped with anything but a brain. You could use it to retrieve a BitLocker Recovery Password or any other Key Protector by providing a VMK and the targeted filesystem.
 
 ## Usage
 Start by building it : 
 ```bash
 cargo build -r 
 ```
-Then simply provide a `VMK` and a `block/disk image file path` or a `nonce`, a `MAC` and a `paylaod`. 
+Then simply provide a `VMK` and a `block/disk image file path` or the Recovery Password's `nonce`, `MAC` and `paylaod`. 
 ```
 Usage: vmk2rk [OPTIONS] --vmk <Key>
 
 Options:
   -v, --vmk <Key>
-          VMK, key used to decrypt the Recovery Password
+          VMK, key used to decrypt key protectors
   -n, --nonce <Nonce>
           Nonce used to decrypt the Recovery Password
   -m, --mac <MAC>
@@ -20,7 +20,9 @@ Options:
   -p, --payload <Payload>
           Payload containing the encrypted Recovery Password
   -d, --disk <DISKPATH>
-          Disk to retrieve the nonce, MAC and encrypted Recovery Password
+          Disk from which Key Protectors are retrieved 
+  -b, --bek
+          Create BEK (BitLocker External Key) file if the Key Protector is configured on the provided disk
   -h, --help
           Print help (see a summary with '-h')
   -V, --version
@@ -29,19 +31,24 @@ Options:
 
 ## How it works
 ![disk-parsing](./img/disk-parsing.png)
-If the VMK, nonce, MAC and payloed or provided when executing `vmk2rk`, it will proceed with decryption. However, if a block file or a disk image is provided, it will try to retrieve the Recovery Password's nonce, MAC and  encrypted form :
+If the VMK, nonce, MAC and payload or provided when executing `vmk2rk`, it will proceed with decryption. However, if a block file or a disk image is provided, it will try to retrieve Key Protectors' nonce, MAC and  encrypted form :
 1. The binary will read the GUID Partition Table (gpt) to retrieve the start address for each partition
 2. It will try to identify the first encrypted partition
 3. If found, it will read the volume header to retrieve the FVE metadata blocks addresses
-4. The tool will then parse the key protectors and identify the one holding the encrypted recovery password
-5. The nonce, MAC and encrypted recovery password will be extracted and passed to the decryption function
+4. The tool will then parse the key protectors and identify the one holding the encrypted Key Protector
+5. The nonce, MAC and encrypted Key Protector will be extracted and passed to the decryption function
 
-The decryption process is as follows: 
+For a Recovery Password, the decryption process is as follows: 
 - The payload is decrypted using AES-256-CCM
 - The header describing the recovery password is removed and the rest is split into 8 2 bytes words
 - The endianess for each word is swapped
 - The words are then multiplied by `0x0b`
 - The words are transformed into integers and displayed with `-` as separators
+Other Key Protectors are stored in the FVE Metadata encrypted using AES-256-CCM.
+
+## Supported Key Protectors : 
+- Recovery Passwords 
+- Startup Keys
 
 ## Dependencies 
 - [clap](https://docs.rs/clap/latest/clap/)

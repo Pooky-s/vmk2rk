@@ -56,6 +56,7 @@ Other Key Protectors are stored in the FVE Metadata encrypted using AES-256-CCM.
 - [ccm](https://docs.rs/ccm/latest/ccm/)
 - [gpt](https://docs.rs/gpt/latest/gpt/)
 - [itertools](https://docs.rs/itertools/latest/itertools/)
+- [uuid](https://docs.rs/uuid/latest/uuid/)
 
 ## Sources
 - Idea is coming from [@pascal-gujer](https://github.com/pascal-gujer) who raised an [issue](https://github.com/Aorimn/dislocker/issues/294) on the [dislocker](https://github.com/Aorimn/dislocker) project.

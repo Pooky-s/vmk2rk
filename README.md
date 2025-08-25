@@ -46,7 +46,7 @@ For a Recovery Password, the decryption process is as follows:
 - The words are transformed into integers and displayed with `-` as separators
 Other Key Protectors are stored in the FVE Metadata encrypted using AES-256-CCM.
 
-## Supported Key Protectors : 
+## Supported Key Protectors 
 - Recovery Passwords 
 - Startup Keys
 

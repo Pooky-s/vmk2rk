@@ -710,8 +710,12 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, _vmk: Str
 
     // entry
     external_key_entry[0x8..0x18].copy_from_slice(&CUSTOM_EXTERNAL_KEY_GUID.to_bytes_le());
-    //println!("{EXTERNAL_KEY_ENTRY_TEMPLATE:0>2x?}");
-    //println!("{external_key_entry:0>2x?}");
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    external_key_entry[0x18..0x20].copy_from_slice(&unix_to_filetime(now));
+    external_key_entry[36+32+12+8..36+32+12+8+8].copy_from_slice(&unix_to_filetime(now));
+    external_key_entry[36+32+12+80+8..36+32+12+80+8+8].copy_from_slice(&unix_to_filetime(now));
+    println!("{EXTERNAL_KEY_ENTRY_TEMPLATE:0>2x?}");
+    println!("{external_key_entry:0>2x?}");
 }
 
 fn main() {

@@ -4,7 +4,7 @@
 use aes::Aes256;
 use ccm::{
     Ccm,
-    aead::{Aead, KeyInit, generic_array::GenericArray},
+    aead::{Aead, KeyInit, generic_array::GenericArray, OsRng},
     consts::{U12, U16},
 };
 use clap::Parser;
@@ -630,7 +630,7 @@ fn parse_key_protector_startup_key(
     }
 }
 
-fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli) -> (String, String, String) {
+fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, next_nonce_counter: u32) -> (String, String, String) {
     let mut _nonce = String::from("");
     let mut _mac = String::from("");
     let mut _payload = String::from("");
@@ -699,7 +699,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli) 
                     ),
                 }
             } else if entry_type == EntryType::VolumeHeaderBlock && datum_type == DatumType::OffsetAndSize && cli.addbek {
-                put_external_key(file, offset, metadata_entries.clone(), vmk.clone());
+                put_external_key(file, offset, metadata_entries.clone(), vmk.clone(), next_nonce_counter);
             };
             cursor += u64::from(u16::from_le_bytes(size_raw));
         } else {
@@ -716,13 +716,13 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli) 
     (_nonce, _mac, _payload)
 }
 
-fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, _vmk: String) {
+fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: String, next_nonce_counter: u32) {
     eprintln!("[i] This feature is not implemented yet");
     
     let mut bek_headers = [0u8; 48];
     let mut bek_content = [0u8; 108];
     let mut external_key_entry = [0u8; 240];
-    
+
     bek_headers.copy_from_slice(&BEK_HEADER_TEMPLATE[0..48]);
     bek_content.copy_from_slice(&BEK_CONTENT_TEMPLATE[0..108]);
     external_key_entry.copy_from_slice(&EXTERNAL_KEY_ENTRY_TEMPLATE[0..240]);
@@ -731,15 +731,34 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, _vmk: Str
     bek_headers = set_bek_header_vars(CUSTOM_EXTERNAL_KEY_GUID, bek_headers.clone());
     println!("[i] External key headers configured :\n\t- GUID :\t{CUSTOM_EXTERNAL_KEY_GUID}\n\t- Headers :\t{bek_headers:0>2x?}");
 
+    let now = unix_to_filetime(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+
+    let key = Aes256Ccm::generate_key(&mut OsRng);
+    let cipher_vmk = Aes256Ccm::new(&key);
+
+
+    let vmk_bytes = decode_hex(&vmk).unwrap();
+    let cipher_external_key = Aes256Ccm::new_from_slice(&vmk_bytes).unwrap();
+    let nonce_bytes_external_key = [now, ((next_nonce_counter as u64)).to_le_bytes()].concat()[0..12].to_vec(); 
+    let nonce_bytes_vmk = [now,((next_nonce_counter as u64)+1).to_le_bytes()].concat()[0..12].to_vec();
+
+    println!("[i] Nonce for external key :\t{nonce_bytes_external_key:0>2x?}");
+    println!("[i] Nonce for VMK:\t\t{nonce_bytes_vmk:0>2x?}");
+
+    let nonce_external_key: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_external_key);
+    let nonce_vmk: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_vmk);
+
+    let ciphertext_external_key = cipher_external_key.encrypt(nonce_external_key, vmk.as_ref());
+    let ciphertext_vmk = cipher_vmk.encrypt(nonce_vmk, key.as_ref());
+
     // data
     // todo
 
     // entry
     external_key_entry[0x8..0x18].copy_from_slice(&CUSTOM_EXTERNAL_KEY_GUID.to_bytes_le());
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    external_key_entry[0x18..0x20].copy_from_slice(&unix_to_filetime(now));
-    external_key_entry[0x58..0x60].copy_from_slice(&unix_to_filetime(now));
-    external_key_entry[0xa8..0xb0].copy_from_slice(&unix_to_filetime(now));
+    external_key_entry[0x18..0x20].copy_from_slice(&now);
+    external_key_entry[0x58..0x60].copy_from_slice(&now);
+    external_key_entry[0xa8..0xb0].copy_from_slice(&now);
     println!("{EXTERNAL_KEY_ENTRY_TEMPLATE:0>2x?}");
     println!("{external_key_entry:0>2x?}");
 }
@@ -778,7 +797,7 @@ fn main() {
             println!("[i] Next nonce counter : \t{next_nonce_counter}");
             if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
                 let offset_metadata_entry_1 = get_metadata_entries_offset(&mut file, offset_metadata_block_1);
-                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset_metadata_entry_1, vmk.clone(), &cli);
+                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset_metadata_entry_1, vmk.clone(), &cli, next_nonce_counter);
                 recovery_pass = decrypt_recovery_password(
                     vmk.clone(),
                     nonce.clone(),

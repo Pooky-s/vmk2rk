@@ -50,6 +50,12 @@ Other Key Protectors are stored in the FVE Metadata encrypted using AES-256-CCM.
 - Recovery Passwords 
 - Startup Keys
 
+## How to get there 
+To retrieve key protectors, it is required to gain access to one of them such as a VMK. This may be achieved by performing TPM sniffing. 
+
+## What is possible with Recovery Passwords and Startup Keys
+Upon successfully retrieving a Recovery Password or a Startup Key, it is possible to boot the disk on any machine even if PCR validation fails.
+
 ## Dependencies 
 - [clap](https://docs.rs/clap/latest/clap/)
 - [aes](https://docs.rs/aes/latest/aes/)

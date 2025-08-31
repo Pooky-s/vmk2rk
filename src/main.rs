@@ -736,7 +736,6 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
     let key = Aes256Ccm::generate_key(&mut OsRng);
     let cipher_vmk = Aes256Ccm::new(&key);
 
-
     let vmk_bytes = decode_hex(&vmk).unwrap();
     let cipher_external_key = Aes256Ccm::new_from_slice(&vmk_bytes).unwrap();
     let nonce_bytes_external_key = [now, ((next_nonce_counter as u64)).to_le_bytes()].concat()[0..12].to_vec(); 
@@ -819,11 +818,11 @@ fn main() {
                 exit(1)
             }
             recovery_pass = decrypt_recovery_password(
-                    vmk.clone(), 
-                    nonce.clone(), 
-                    mac.clone(), 
-                    payload.clone()
-                );
+                vmk.clone(), 
+                nonce.clone(), 
+                mac.clone(), 
+                payload.clone()
+            );
         }
     }
 

@@ -10,7 +10,7 @@ use ccm::{
 use clap::Parser;
 use gpt::{GptConfig, disk::LogicalBlockSize};
 use itertools::Itertools;
-use std::{convert::TryInto, io::Write};
+use std::{convert::TryInto, io::Write, vec};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -139,9 +139,13 @@ struct Cli {
     #[arg(short, long, value_name = "DISKPATH")]
     disk: Option<String>,
 
-    /// CCreate BEK (BitLocker External Key) file if the Key Protector is configured on the provided disk
+    /// Create BEK (BitLocker External Key) file if the Key Protector is configured on the provided disk
     #[arg(short, long)]
     bek: bool,
+
+    /// Add BEK (BitLocker External Key) to the provided disk
+    #[arg(short, long)]
+    addbek: bool,
 }
 
 // AES-256-CCM init
@@ -248,9 +252,9 @@ pub fn format_addresses(vec: &[u8]) -> Vec<u64> {
         .collect()
 }
 
-fn find_fve_metadata_block(disk: String) -> u64 {
+fn find_fve_metadata_block(disk: String) -> (u64, u64, u64) {
     // Finds the offset at which the first FVE metadata block is located
-    let mut offset = 0u64;
+    let mut offsets: (u64, u64, u64) = (0u64, 0u64, 0u64);
     let disk_path = Path::new(&disk);
     let gpt_disk = GptConfig::new().writable(false).open(disk_path).unwrap();
     let partitions = gpt_disk.partitions();
@@ -280,9 +284,13 @@ fn find_fve_metadata_block(disk: String) -> u64 {
             || &vbr[0..11] == VISTA_SIGNATURE
             || &vbr[0..11] == TOGO_SIGNATURE
         {
-            let mut offset_metadata_block: [u8; 8] = [0; 8];
+            let mut offset_metadata_block_1: [u8; 8] = [0; 8];
+            let mut offset_metadata_block_2: [u8; 8] = [0; 8];
+            let mut offset_metadata_block_3: [u8; 8] = [0; 8];
             let mut bitlocker_identifier_raw: [u8; 16] = [0; 16];
-            offset_metadata_block.copy_from_slice(&vbr[176..184]);
+            offset_metadata_block_1.copy_from_slice(&vbr[176..184]);
+            offset_metadata_block_2.copy_from_slice(&vbr[184..192]);
+            offset_metadata_block_3.copy_from_slice(&vbr[192..200]);
             bitlocker_identifier_raw.copy_from_slice(&vbr[160..176]);
             let bitlocker_identifier = Uuid::from_bytes_le(bitlocker_identifier_raw);
             println!(
@@ -293,10 +301,10 @@ fn find_fve_metadata_block(disk: String) -> u64 {
                 "[i] BitLocker identifier :\t{{{}}} ",
                 bitlocker_identifier.to_string().to_uppercase()
             );
-            offset = start_byte_offset + u64::from_le_bytes(offset_metadata_block);
+            offsets = (start_byte_offset + u64::from_le_bytes(offset_metadata_block_1), start_byte_offset + u64::from_le_bytes(offset_metadata_block_2), start_byte_offset + u64::from_le_bytes(offset_metadata_block_3));
         }
     }
-    offset
+    offsets
 }
 
 fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
@@ -548,12 +556,13 @@ fn parse_key_protector_startup_key(
     }
 }
 
-fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: Cli) -> (String, String, String) {
+fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli) -> (String, String, String) {
     let mut _nonce = String::from("");
     let mut _mac = String::from("");
     let mut _payload = String::from("");
     let mut get_size = [0u8; 0x2];
     let mut cursor = offset;
+    let mut metadata_entries : Vec<u8> = Vec::new();
 
     println!("\n[i] Reading FVE Metadata entries.\n[i] The offset of the metadata entries is at 0x{offset:x}.");
 
@@ -572,6 +581,8 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: Cli) -
             let mut metadata_entry = vec![0u8; size];
             file.seek(SeekFrom::Start(cursor)).unwrap();
             file.read_exact(&mut metadata_entry).unwrap();
+            println!("{:0>2x?}\n", metadata_entry);
+            metadata_entries.append(&mut metadata_entry.clone());
 
             let mut entry_type_raw: [u8; 2] = [0; 2];
             let mut datum_raw: [u8; 2] = [0; 2];
@@ -613,15 +624,26 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: Cli) -
                         guid.to_string().to_uppercase()
                     ),
                 }
+            } else if entry_type == EntryType::VolumeHeaderBlock && datum_type == DatumType::OffsetAndSize && cli.addbek {
+                put_external_key();
             };
             cursor += u64::from(u16::from_le_bytes(size_raw));
         } else {
-            eprintln!("[!] The size of the retrieved entry appears to be incoherent, stopping.");
+            eprintln!("[!] The size of the retrieved entry appears to be incoherent ({size} bytes), stopping. ");
+            let mut metadata_entry = vec![0u8; 100];
+            file.seek(SeekFrom::Start(cursor)).unwrap();
+            file.read_exact(&mut metadata_entry).unwrap();
+            metadata_entries.append(&mut metadata_entry);
+            println!("{:0>2x?}", metadata_entries);
             break;
             //exit(1);
         }
     }
     (_nonce, _mac, _payload)
+}
+
+fn put_external_key() {
+    eprintln!("[i] This feature is not implemented yet");
 }
 
 fn main() {
@@ -633,31 +655,37 @@ fn main() {
 
     match disk {
         Some(disk) => {
-            // Retrieves the offset were the first FVE metadata block is located
+            // Retrieves offsets where the first FVE metadata block is located
             let mut file = File::open(disk.clone()).unwrap();
-            let mut offset = find_fve_metadata_block(disk);
+            let offsets: (u64, u64, u64) = find_fve_metadata_block(disk);
+            let offset_metadata_block_1 = offsets.0;
+
+            println!("[i] Metadata blocks' offsets : {offsets:x?}");
 
             // Parses metadata headers
-            file.seek(SeekFrom::Start(offset + 10)).unwrap();
+            file.seek(SeekFrom::Start(offset_metadata_block_1 + 10)).unwrap();
             let mut version = [0u8; 2];
             let _ = file.read_exact(&mut version).is_ok();
-            file.seek(SeekFrom::Start(offset + 80)).unwrap();
+            file.seek(SeekFrom::Start(offset_metadata_block_1 + 80)).unwrap();
             let mut volume_guid_raw = [0u8; 16];
             let _ = file.read_exact(&mut volume_guid_raw).is_ok();
             let volume_guid = Uuid::from_bytes_le(volume_guid_raw);
             println!(
-                "\n[i] Reading FVE Metadata block 1 located at 0x{offset:x}.\n[i] Volume identifier :\t\t{{{}}}",
+                "\n[i] Reading FVE Metadata block 1 located at 0x{offset_metadata_block_1:x}.\n[i] Volume identifier :\t\t{{{}}}",
                 volume_guid.to_string().to_uppercase()
             );
             if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
-                offset = get_metadata_entries_offset(&mut file, offset);
-                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset,vmk.clone(), cli);
+                let offset_metadata_entry_1 = get_metadata_entries_offset(&mut file, offset_metadata_block_1);
+                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset_metadata_entry_1, vmk.clone(), &cli);
                 recovery_pass = decrypt_recovery_password(
                     vmk.clone(),
                     nonce.clone(),
                     mac.clone(),
                     payload.clone(),
                 );
+            }
+            if cli.addbek {
+                eprintln!("[!] Feature not implemented yet...");
             }
         }
         None => {

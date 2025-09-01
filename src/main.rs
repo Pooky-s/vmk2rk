@@ -660,7 +660,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
             let mut metadata_entry = vec![0u8; size];
             file.seek(SeekFrom::Start(cursor)).unwrap();
             file.read_exact(&mut metadata_entry).unwrap();
-            println!("{:0>2x?}\n", metadata_entry);
+            //println!("{:0>2x?}\n", metadata_entry);
             metadata_entries.append(&mut metadata_entry.clone());
 
             let mut entry_type_raw: [u8; 2] = [0; 2];
@@ -780,8 +780,8 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
     // Payloads
     external_key_entry[0x74..0xa0].copy_from_slice(&encrypted_external_key);
     external_key_entry[0xc4..0xf0].copy_from_slice(&encrypted_vmk);
-    println!("{EXTERNAL_KEY_ENTRY_TEMPLATE:0>2x?}");
-    println!("{external_key_entry:0>2x?}");
+    //println!("{EXTERNAL_KEY_ENTRY_TEMPLATE:0>2x?}");
+    //println!("{external_key_entry:0>2x?}");
 
     // Creating BEK file
     parse_key_protector_startup_key(CUSTOM_EXTERNAL_KEY_GUID,external_key_entry.to_vec(),vmk);

@@ -724,17 +724,8 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
 fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: String, next_nonce_counter: u32) {
     eprintln!("[i] This feature is not implemented yet, it will do nothing beside printing nonsense.");
     
-    let mut bek_headers = [0u8; 48];
-    let mut bek_content = [0u8; 108];
     let mut external_key_entry = [0u8; 240];
-
-    bek_headers.copy_from_slice(&BEK_HEADER_TEMPLATE[0..48]);
-    bek_content.copy_from_slice(&BEK_CONTENT_TEMPLATE[0..108]);
     external_key_entry.copy_from_slice(&EXTERNAL_KEY_ENTRY_TEMPLATE[0..240]);
-
-    // header
-    bek_headers = set_bek_header_vars(CUSTOM_EXTERNAL_KEY_GUID, bek_headers.clone());
-    println!("[i] External key headers configured :\n\t- GUID :\t{CUSTOM_EXTERNAL_KEY_GUID}\n\t- Headers :\t{bek_headers:0>2x?}");
 
     let now = unix_to_filetime(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
 
@@ -746,14 +737,17 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
     let cipher_vmk = Aes256Ccm::new(&key_vmk);
     let nonce_bytes_vmk = [now,((next_nonce_counter as u64)+1).to_le_bytes()].concat()[0..12].to_vec();
 
+    println!("[i] Key used to encrypt the External Key :\t{:0>2x?}",key_external_key);
+    println!("[i] Key used to encrypt the VMK :\t\t{:0>2x?}",key_vmk);
+
     println!("[i] Nonce for external key :\t{nonce_bytes_external_key:0>2x?}");
     println!("[i] Nonce for VMK:\t\t{nonce_bytes_vmk:0>2x?}");
 
     let nonce_and_counter_external_key: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_external_key);
     let nonce_and_counter_vmk: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_vmk);
 
-    let payload_ek = [EXTERNAL_KEY_HEADER_TEMPLATE.to_vec(),key_external_key.to_vec()].concat();
-    let payload_vmk = [VMK_HEADER_TEMPLATE.to_vec(),key_vmk.to_vec()].concat();
+    let payload_ek = [EXTERNAL_KEY_HEADER_TEMPLATE.to_vec(),key_vmk.to_vec()].concat();
+    let payload_vmk = [VMK_HEADER_TEMPLATE.to_vec(),key_external_key.to_vec()].concat();
 
     let ciphertext_external_key = cipher_external_key.encrypt(nonce_and_counter_external_key, payload_ek.as_ref());
     let ciphertext_vmk = cipher_vmk.encrypt(nonce_and_counter_vmk, payload_vmk.as_ref());
@@ -769,9 +763,6 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
 
     println!("[i] MAC for external key :\t{mac_external_key:0>2x?}");
     println!("[i] MAC for VMK:\t\t{mac_vmk:0>2x?}");
-
-    // data
-    // todo
 
     // Entry crafting 
     // GUID
@@ -791,6 +782,9 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
     external_key_entry[0xc4..0xf0].copy_from_slice(&encrypted_vmk);
     println!("{EXTERNAL_KEY_ENTRY_TEMPLATE:0>2x?}");
     println!("{external_key_entry:0>2x?}");
+
+    // Creating BEK file
+    parse_key_protector_startup_key(CUSTOM_EXTERNAL_KEY_GUID,external_key_entry.to_vec(),vmk);
 }
 
 fn main() {

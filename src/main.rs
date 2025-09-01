@@ -601,7 +601,7 @@ fn parse_key_protector_startup_key(
             exit(1);
         }
     };
-    println!("[i] Unparsed plaintext :\t{:0>2x?}",plaintext);
+    //println!("[i] Unparsed plaintext :\t{:0>2x?}",plaintext);
     plaintext = plaintext[24..plaintext.len()].to_string();
     println!("[i] Startup Key :\t{}",plaintext);
 
@@ -713,7 +713,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
             file.seek(SeekFrom::Start(cursor)).unwrap();
             file.read_exact(&mut metadata_entry).unwrap();
             metadata_entries.append(&mut metadata_entry);
-            println!("{:0>2x?}", metadata_entries);
+            //println!("{:0>2x?}", metadata_entries);
             break;
             //exit(1);
         }
@@ -722,7 +722,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
 }
 
 fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: String, next_nonce_counter: u32) {
-    eprintln!("[i] This feature is not implemented yet");
+    eprintln!("[i] This feature is not implemented yet, it will do nothing beside printing nonsense.");
     
     let mut bek_headers = [0u8; 48];
     let mut bek_content = [0u8; 108];

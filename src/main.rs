@@ -649,7 +649,6 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
         // Retrieves key protector size
         file.seek(SeekFrom::Start(cursor)).unwrap();
         file.read_exact(&mut get_size).unwrap();
-
         let mut size_raw: [u8; 2] = [0; 2];
         size_raw.copy_from_slice(&get_size[0x00..0x02]);
         let size: usize = usize::from(u16::from_le_bytes(size_raw));
@@ -704,7 +703,9 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
                     ),
                 }
             } else if entry_type == EntryType::VolumeHeaderBlock && datum_type == DatumType::OffsetAndSize && cli.addbek {
-                put_external_key(file, offset, metadata_entries.clone(), vmk.clone(), next_nonce_counter);
+                file.seek(SeekFrom::Start(cursor+u64::from(u16::from_le_bytes(size_raw)))).unwrap();
+                file.read_exact(&mut get_size).unwrap();
+                put_external_key(file, offset, ((cursor+u64::from(u16::from_le_bytes(size_raw)))-offset)+(u16::from_le_bytes(get_size) as u64), vmk.clone(), next_nonce_counter);
             };
             cursor += u64::from(u16::from_le_bytes(size_raw));
         } else {
@@ -721,9 +722,9 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
     (_nonce, _mac, _payload)
 }
 
-fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: String, next_nonce_counter: u32) {
+fn put_external_key(_file: &mut File, _offset: u64, _entries_size: u64, vmk: String, next_nonce_counter: u32) {
     eprintln!("[i] This feature is not implemented yet, it will do nothing beside printing nonsense.");
-    
+
     let mut external_key_entry = [0u8; 240];
     external_key_entry.copy_from_slice(&EXTERNAL_KEY_ENTRY_TEMPLATE[0..240]);
 
@@ -787,6 +788,7 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
     parse_key_protector_startup_key(CUSTOM_EXTERNAL_KEY_GUID,external_key_entry.to_vec(),vmk);
 
     // Adding entry to all the entries
+
 }
 
 fn main() {

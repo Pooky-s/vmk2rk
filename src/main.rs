@@ -785,6 +785,8 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
 
     // Creating BEK file
     parse_key_protector_startup_key(CUSTOM_EXTERNAL_KEY_GUID,external_key_entry.to_vec(),vmk);
+
+    // Adding entry to all the entries
 }
 
 fn main() {

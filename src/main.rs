@@ -237,7 +237,11 @@ const EXTERNAL_KEY_ENTRY_TEMPLATE: [u8; 240] = [
     0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
 ];
 
-const CUSTOM_EXTERNAL_KEY_GUID : Uuid = Uuid::from_bytes_le([0x50,0x6f,0x6f,0x6b,0x79,0x27,0x20,0x77,0x61,0x73,0x20,0x68,0x65,0x72,0x65,0x21]);
+const CUSTOM_EXTERNAL_KEY_GUID: Uuid = Uuid::from_bytes_le([0x50,0x6f,0x6f,0x6b,0x79,0x27,0x20,0x77,0x61,0x73,0x20,0x68,0x65,0x72,0x65,0x21]);
+
+const EXTERNAL_KEY_HEADER_TEMPLATE: [u8; 12] = [0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x20, 0x00, 0x00];
+
+const VMK_HEADER_TEMPLATE: [u8; 12] = [0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00];
 
 #[derive(Parser)]
 #[command(
@@ -597,6 +601,7 @@ fn parse_key_protector_startup_key(
             exit(1);
         }
     };
+    println!("[i] Unparsed plaintext :\t{:0>2x?}",plaintext);
     plaintext = plaintext[24..plaintext.len()].to_string();
     println!("[i] Startup Key :\t{}",plaintext);
 
@@ -733,31 +738,57 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries: Vec<u8>, vmk: Stri
 
     let now = unix_to_filetime(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
 
-    let key = Aes256Ccm::generate_key(&mut OsRng);
-    let cipher_vmk = Aes256Ccm::new(&key);
-
-    let vmk_bytes = decode_hex(&vmk).unwrap();
-    let cipher_external_key = Aes256Ccm::new_from_slice(&vmk_bytes).unwrap();
+    let key_external_key = decode_hex(&vmk).unwrap();
+    let cipher_external_key = Aes256Ccm::new_from_slice(&key_external_key).unwrap();
     let nonce_bytes_external_key = [now, ((next_nonce_counter as u64)).to_le_bytes()].concat()[0..12].to_vec(); 
+
+    let key_vmk = Aes256Ccm::generate_key(&mut OsRng);
+    let cipher_vmk = Aes256Ccm::new(&key_vmk);
     let nonce_bytes_vmk = [now,((next_nonce_counter as u64)+1).to_le_bytes()].concat()[0..12].to_vec();
 
     println!("[i] Nonce for external key :\t{nonce_bytes_external_key:0>2x?}");
     println!("[i] Nonce for VMK:\t\t{nonce_bytes_vmk:0>2x?}");
 
-    let nonce_external_key: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_external_key);
-    let nonce_vmk: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_vmk);
+    let nonce_and_counter_external_key: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_external_key);
+    let nonce_and_counter_vmk: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_vmk);
 
-    let ciphertext_external_key = cipher_external_key.encrypt(nonce_external_key, vmk.as_ref());
-    let ciphertext_vmk = cipher_vmk.encrypt(nonce_vmk, key.as_ref());
+    let payload_ek = [EXTERNAL_KEY_HEADER_TEMPLATE.to_vec(),key_external_key.to_vec()].concat();
+    let payload_vmk = [VMK_HEADER_TEMPLATE.to_vec(),key_vmk.to_vec()].concat();
+
+    let ciphertext_external_key = cipher_external_key.encrypt(nonce_and_counter_external_key, payload_ek.as_ref());
+    let ciphertext_vmk = cipher_vmk.encrypt(nonce_and_counter_vmk, payload_vmk.as_ref());
+
+    let encrypted_external_key = ciphertext_external_key.clone().unwrap()[0..ciphertext_external_key.clone().unwrap().len()-16].to_vec();
+    let encrypted_vmk = ciphertext_vmk.clone().unwrap()[0..ciphertext_vmk.clone().unwrap().len()-16].to_vec();
+
+    println!("[i] Payload for external key :\t{encrypted_external_key:0>2x?}");
+    println!("[i] Payload for VMK:\t\t{encrypted_vmk:0>2x?}");
+
+    let mac_external_key = ciphertext_external_key.clone().unwrap()[ciphertext_external_key.clone().unwrap().len()-16..ciphertext_external_key.unwrap().len()].to_vec();
+    let mac_vmk = ciphertext_vmk.clone().unwrap()[ciphertext_vmk.clone().unwrap().len()-16..ciphertext_vmk.unwrap().len()].to_vec();
+
+    println!("[i] MAC for external key :\t{mac_external_key:0>2x?}");
+    println!("[i] MAC for VMK:\t\t{mac_vmk:0>2x?}");
 
     // data
     // todo
 
-    // entry
+    // Entry crafting 
+    // GUID
     external_key_entry[0x8..0x18].copy_from_slice(&CUSTOM_EXTERNAL_KEY_GUID.to_bytes_le());
+    // FILETIMES
     external_key_entry[0x18..0x20].copy_from_slice(&now);
     external_key_entry[0x58..0x60].copy_from_slice(&now);
     external_key_entry[0xa8..0xb0].copy_from_slice(&now);
+    // Nonce counters
+    external_key_entry[0x60..0x64].copy_from_slice(&((next_nonce_counter as u32)).to_le_bytes());
+    external_key_entry[0xb0..0xb4].copy_from_slice(&((next_nonce_counter as u32)+1).to_le_bytes());
+    // MACs
+    external_key_entry[0x64..0x74].copy_from_slice(&mac_external_key);
+    external_key_entry[0xb4..0xc4].copy_from_slice(&mac_vmk);
+    // Payloads
+    external_key_entry[0x74..0xa0].copy_from_slice(&encrypted_external_key);
+    external_key_entry[0xc4..0xf0].copy_from_slice(&encrypted_vmk);
     println!("{EXTERNAL_KEY_ENTRY_TEMPLATE:0>2x?}");
     println!("{external_key_entry:0>2x?}");
 }

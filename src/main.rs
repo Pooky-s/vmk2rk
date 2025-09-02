@@ -705,7 +705,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
             } else if entry_type == EntryType::VolumeHeaderBlock && datum_type == DatumType::OffsetAndSize && cli.addbek {
                 file.seek(SeekFrom::Start(cursor+u64::from(u16::from_le_bytes(size_raw)))).unwrap();
                 file.read_exact(&mut get_size).unwrap();
-                put_external_key(file, offset, ((cursor+u64::from(u16::from_le_bytes(size_raw)))-offset)+(u16::from_le_bytes(get_size) as u64), vmk.clone(), next_nonce_counter);
+                put_external_key(file, offset, cursor-offset, ((cursor+u64::from(u16::from_le_bytes(size_raw)))-offset)+(u16::from_le_bytes(get_size) as u64), vmk.clone(), next_nonce_counter);
             };
             cursor += u64::from(u16::from_le_bytes(size_raw));
         } else {
@@ -722,7 +722,7 @@ fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, 
     (_nonce, _mac, _payload)
 }
 
-fn put_external_key(_file: &mut File, _offset: u64, _entries_size: u64, vmk: String, next_nonce_counter: u32) {
+fn put_external_key(file: &mut File, offset: u64, cursor: u64, entries_size: u64, vmk: String, next_nonce_counter: u32) {
     eprintln!("[i] This feature is not implemented yet, it will do nothing beside printing nonsense.");
 
     let mut external_key_entry = [0u8; 240];
@@ -787,8 +787,17 @@ fn put_external_key(_file: &mut File, _offset: u64, _entries_size: u64, vmk: Str
     // Creating BEK file
     parse_key_protector_startup_key(CUSTOM_EXTERNAL_KEY_GUID,external_key_entry.to_vec(),vmk);
 
-    // Adding entry to all the entries
-
+    // Adding entry to the other entries
+    let mut initial_entries = vec![0u8; entries_size as usize];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut initial_entries).unwrap();
+    println!("{:0>2x?}",initial_entries[0..(cursor as usize)].to_vec());
+    let mut size_fve_header_block = [0u8;2];
+    file.seek(SeekFrom::Start(offset+cursor)).unwrap();
+    file.read_exact(&mut size_fve_header_block).unwrap();
+    let new_entries = [initial_entries[0..(cursor as usize)].to_vec(), external_key_entry.to_vec(), initial_entries[(cursor as usize)..(cursor as usize)+(u16::from_le_bytes(size_fve_header_block) as usize)].to_vec()].concat();
+    println!("{:0>2x?}",new_entries);
+    println!("{:0>2x?}",size_fve_header_block);
 }
 
 fn main() {

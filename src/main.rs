@@ -4,19 +4,19 @@
 use aes::Aes256;
 use ccm::{
     Ccm,
-    aead::{Aead, KeyInit, generic_array::GenericArray, OsRng},
-    consts::{U12, U16},
+    aead::{Aead, KeyInit, OsRng, generic_array::GenericArray},
+    consts::{U12, U16, U32},
 };
 use clap::Parser;
 use gpt::{GptConfig, disk::LogicalBlockSize};
 use itertools::Itertools;
-use std::{convert::TryInto, io::Write, vec};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::exit;
-use std::{fmt::Write as Fmt_Write, num::ParseIntError};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{convert::TryInto, io::Write, vec};
+use std::{fmt::Write as Fmt_Write, num::ParseIntError};
 use uuid::Uuid;
 
 // Declare constants (needed to verify the offset found)
@@ -114,134 +114,101 @@ fn get_protector_type(protector_type: u16) -> ProtectorType {
 
 const BEK_HEADER_TEMPLATE: [u8; 48] = [
     // BEK file's size (calculated at the end of the generation of the file content)
-    0xff,0x00,0x00,0x00,
-    // Version (always 0x0001)
-    0x01,0x00,0x00,0x00,
-    // Header's size (always 48)
-    0x30,0x00,0x00,0x00,
-    // Copy of BEK file's size 
-    0xff,0x00,0x00,0x00,
-    // Key protector's GUID (will be retrieved)
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff, 0x00, 0x00, 0x00, // Version (always 0x0001)
+    0x01, 0x00, 0x00, 0x00, // Header's size (always 48)
+    0x30, 0x00, 0x00, 0x00, // Copy of BEK file's size
+    0xff, 0x00, 0x00, 0x00, // Key protector's GUID (will be retrieved)
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     // Nonce counter
-    0x01,0x00,0x00,0x00,
-    // Encryption type (0x0000 because it is an external key)
-    0x00,0x00,0x00,0x00,
+    0x01, 0x00, 0x00, 0x00, // Encryption type (0x0000 because it is an external key)
+    0x00, 0x00, 0x00, 0x00,
     // Creation time (will be modified to reflect the time at which the file is created)
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
 
-const BEK_CONTENT_TEMPLATE: [u8; 108]  = [
+const BEK_CONTENT_TEMPLATE: [u8; 108] = [
     // Content Size (This entry and its sub-entries)
-    0xff,0x00,
-    // Entry Type (Startup Key)
-    0x06,0x00, 
-    // Datum Type (External Key)
-    0x09,0x00,
-    // Version (always 0x0001)
-    0x01,0x00,
-    // External Key GUID
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff, 0x00, // Entry Type (Startup Key)
+    0x06, 0x00, // Datum Type (External Key)
+    0x09, 0x00, // Version (always 0x0001)
+    0x01, 0x00, // External Key GUID
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     // External Key modification time
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
-    // Entry Size
-    0x20,0x00,
-    // Entry Type 
-    0x00,0x00,
-    // Datum Type (String)
-    0x02,0x00,
-    // Version (always 0x0001)
-    0x01,0x00,
-    // String content ("External Key\x00")
-    0x45,0x00,0x78,0x00,0x74,0x00,0x65,0x00,0x72,0x00,0x6e,0x00,0x61,0x00,0x6c,0x00,0x4b,0x00,0x65,0x00,0x79,0x00,0x00,0x00,
-    // Entry Size
-    0x2c,0x00,
-    // Entry Type 
-    0x00,0x00,
-    // Datum Type (Key)
-    0x01,0x00,
-    // Version (always 0x0001)
-    0x01,0x00,
-    // Key protector type (External Key)
-    0x02,0x20,0x00,0x00,
-    // External Key
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // Entry Size
+    0x20, 0x00, // Entry Type
+    0x00, 0x00, // Datum Type (String)
+    0x02, 0x00, // Version (always 0x0001)
+    0x01, 0x00, // String content ("External Key\x00")
+    0x45, 0x00, 0x78, 0x00, 0x74, 0x00, 0x65, 0x00, 0x72, 0x00, 0x6e, 0x00, 0x61, 0x00, 0x6c, 0x00,
+    0x4b, 0x00, 0x65, 0x00, 0x79, 0x00, 0x00, 0x00, // Entry Size
+    0x2c, 0x00, // Entry Type
+    0x00, 0x00, // Datum Type (Key)
+    0x01, 0x00, // Version (always 0x0001)
+    0x01, 0x00, // Key protector type (External Key)
+    0x02, 0x20, 0x00, 0x00, // External Key
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
 
 const EXTERNAL_KEY_ENTRY_TEMPLATE: [u8; 240] = [
     // Content Size (This entry and its sub-entries)
-    0xf0,0x00,
-    // Entry type
-    0x02,0x00,
-    // Datum type
-    0x08,0x00,
-    // Version (always 0x01)
-    0x01,0x00,
-    // GUID 
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xf0, 0x00, // Entry type
+    0x02, 0x00, // Datum type
+    0x08, 0x00, // Version (always 0x01)
+    0x01, 0x00, // GUID
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     // Timestamp
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
-    // Protector type
-    0x00,0x00 ,0x00,0x02,
-    // String size
-    0x20,0x00, 
-    // Entry type 
-    0x00,0x00,
-    // Datum type
-    0x02,0x00,
-    // Version (always 0x01)
-    0x01,0x00,
-    // String content ("External Key\x00")
-    0x45,0x00,0x78,0x00,0x74,0x00,0x65,0x00,0x72,0x00,0x6e,0x00,0x61,0x00,0x6c,0x00,0x4b,0x00,0x65,0x00,0x79,0x00,0x00,0x00,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // Protector type
+    0x00, 0x00, 0x00, 0x02, // String size
+    0x20, 0x00, // Entry type
+    0x00, 0x00, // Datum type
+    0x02, 0x00, // Version (always 0x01)
+    0x01, 0x00, // String content ("External Key\x00")
+    0x45, 0x00, 0x78, 0x00, 0x74, 0x00, 0x65, 0x00, 0x72, 0x00, 0x6e, 0x00, 0x61, 0x00, 0x6c, 0x00,
+    0x4b, 0x00, 0x65, 0x00, 0x79, 0x00, 0x00, 0x00,
     // Entry key protectors (size following)
-    0x5c,0x00,
-    // Entry type 
-    0x00,0x00,
-    // Datum type
-    0x04,0x00,
-    // Version (always 0x01)
-    0x01,0x00,
-    // Key protector type (External Key)
-    0x02,0x20,0x00,0x00,
+    0x5c, 0x00, // Entry type
+    0x00, 0x00, // Datum type
+    0x04, 0x00, // Version (always 0x01)
+    0x01, 0x00, // Key protector type (External Key)
+    0x02, 0x20, 0x00, 0x00,
     // Entry key protector containing encrypted external key (size following)
-    0x50,0x00,
-    // Entry type
-    0x00,0x00,
-    // Datum type
-    0x05,0x00,
-    // Version (always 0x01)
-    0x01,0x00,
-    // FILETIME
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
-    // Nonce counter
-    0xff,0x00,0x00,0x00,
-    // MAC
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0x50, 0x00, // Entry type
+    0x00, 0x00, // Datum type
+    0x05, 0x00, // Version (always 0x01)
+    0x01, 0x00, // FILETIME
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // Nonce counter
+    0xff, 0x00, 0x00, 0x00, // MAC
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     // Payload
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     // Entry key protector containing encrypted VMK
-    0x50,0x00,
-    // Entry type
-    0x00,0x00,
-    // Datum type
-    0x05,0x00,
-    // Version (always 0x01)
-    0x01,0x00,
-    // FILETIME
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
-    // Nonce counter
-    0xff,0x00,0x00,0x00,
-    // MAC
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0x50, 0x00, // Entry type
+    0x00, 0x00, // Datum type
+    0x05, 0x00, // Version (always 0x01)
+    0x01, 0x00, // FILETIME
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // Nonce counter
+    0xff, 0x00, 0x00, 0x00, // MAC
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     // Payload
-    0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
 
-const CUSTOM_EXTERNAL_KEY_GUID: Uuid = Uuid::from_bytes_le([0x50,0x6f,0x6f,0x6b,0x79,0x27,0x20,0x77,0x61,0x73,0x20,0x68,0x65,0x72,0x65,0x21]);
+const CUSTOM_EXTERNAL_KEY_GUID: Uuid = Uuid::from_bytes_le([
+    0x50, 0x6f, 0x6f, 0x6b, 0x79, 0x27, 0x20, 0x77, 0x61, 0x73, 0x20, 0x68, 0x65, 0x72, 0x65, 0x21,
+]);
 
-const EXTERNAL_KEY_HEADER_TEMPLATE: [u8; 12] = [0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x20, 0x00, 0x00];
+const EXTERNAL_KEY_HEADER_TEMPLATE: [u8; 12] = [
+    0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x20, 0x00, 0x00,
+];
 
-const VMK_HEADER_TEMPLATE: [u8; 12] = [0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00];
+const VMK_HEADER_TEMPLATE: [u8; 12] = [
+    0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00,
+];
 
 #[derive(Parser)]
 #[command(
@@ -266,7 +233,7 @@ struct Cli {
     #[arg(short, long, value_name = "Payload", default_value_t = String::from("487c4e3f137759409f626bae6e39d24e59d283b6b1e19db6678646ce"))]
     payload: String,
 
-    /// Disk from which Key Protectors are retrieved 
+    /// Disk from which Key Protectors are retrieved
     #[arg(short, long, value_name = "DISKPATH")]
     disk: Option<String>,
 
@@ -284,18 +251,18 @@ pub type Aes256Ccm = Ccm<Aes256, U16, U12>;
 
 // Utils
 //fn filetime_to_unix(filetime_bytes: [u8; 8]) -> u64 {
-    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
-    //const EPOCH_DIFF: u64 = 11_644_473_600;
-    //const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
+// Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
+//const EPOCH_DIFF: u64 = 11_644_473_600;
+//const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
 
-    // Convert bytes into 64-bit value (little-endian)
-    //let filetime_val = u64::from_le_bytes(filetime_bytes);
+// Convert bytes into 64-bit value (little-endian)
+//let filetime_val = u64::from_le_bytes(filetime_bytes);
 
-    // Convert from 100ns intervals to seconds
-    //let total_secs = filetime_val / HUNDRED_NS_PER_SEC;
+// Convert from 100ns intervals to seconds
+//let total_secs = filetime_val / HUNDRED_NS_PER_SEC;
 
-    // Subtract Windows→Unix epoch difference
-    //total_secs - EPOCH_DIFF
+// Subtract Windows→Unix epoch difference
+//total_secs - EPOCH_DIFF
 //}
 
 fn unix_to_filetime(unix_time: u64) -> [u8; 8] {
@@ -384,24 +351,27 @@ pub fn format_addresses(vec: &[u8]) -> Vec<u64> {
 }
 
 fn set_bek_header_vars(guid: Uuid, mut bek_headers: [u8; 48]) -> [u8; 48] {
-        // Processing GUID
-    let mut guid_raw : [u8; 16] = [0u8; 16];
+    // Processing GUID
+    let mut guid_raw: [u8; 16] = [0u8; 16];
     guid_raw.copy_from_slice(&bek_headers[16..32]);
     bek_headers[16..32].copy_from_slice(&guid.to_bytes_le());
     //println!("[i] Settting GUID : \n\tFrom :\t{} | {:0>2x?}\n\tTo :\t{} | {:0>2x?}",Uuid::from_bytes_le(guid_raw),guid_raw,guid,guid.to_bytes_le());
 
     // Processing FILETIME
-    let mut filetime_raw : [u8; 8] = [0u8; 8];
+    let mut filetime_raw: [u8; 8] = [0u8; 8];
     filetime_raw.copy_from_slice(&bek_headers[40..48]);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     bek_headers[40..48].copy_from_slice(&unix_to_filetime(now));
     //println!("[i] Settting FILETIME : \n\tFrom :\t{:?} | {:0>2x?}\n\tTo :\t{:?} | {:0>2x?}",filetime_to_unix(filetime_raw),filetime_raw,now,unix_to_filetime(now));
     bek_headers
 }
 
-fn find_fve_metadata_block(disk: String) -> [u64;3] {
+fn find_fve_metadata_block(disk: String) -> [u64; 3] {
     // Finds the offset at which the first FVE metadata block is located
-    let mut offsets: [u64;3] = [0u64;3];
+    let mut offsets: [u64; 3] = [0u64; 3];
     let disk_path = Path::new(&disk);
     let gpt_disk = GptConfig::new().writable(false).open(disk_path).unwrap();
     let partitions = gpt_disk.partitions();
@@ -410,7 +380,10 @@ fn find_fve_metadata_block(disk: String) -> [u64;3] {
         eprintln!("[!] No partitions found.");
         exit(1);
     }
-    println!("[i] Reading GUID Partition Table.\n[i] Found {} GPT partitions.", partitions.len());
+    println!(
+        "[i] Reading GUID Partition Table.\n[i] Found {} GPT partitions.",
+        partitions.len()
+    );
 
     for (index, part) in partitions.values().enumerate() {
         let start_byte_offset = match part.bytes_start(LB_SIZE) {
@@ -448,7 +421,11 @@ fn find_fve_metadata_block(disk: String) -> [u64;3] {
                 "[i] BitLocker identifier :\t{{{}}} ",
                 bitlocker_identifier.to_string().to_uppercase()
             );
-            offsets = [start_byte_offset + u64::from_le_bytes(offset_metadata_block_1), start_byte_offset + u64::from_le_bytes(offset_metadata_block_2), start_byte_offset + u64::from_le_bytes(offset_metadata_block_3)];
+            offsets = [
+                start_byte_offset + u64::from_le_bytes(offset_metadata_block_1),
+                start_byte_offset + u64::from_le_bytes(offset_metadata_block_2),
+                start_byte_offset + u64::from_le_bytes(offset_metadata_block_3),
+            ];
         }
     }
     offsets
@@ -545,41 +522,40 @@ fn parse_key_protector_recovery_password(
     (nonce, mac, payload)
 }
 
-fn parse_key_protector_startup_key(
-    guid: Uuid,
-    metadata_entry: Vec<u8>,
-    vmk: String
-) {
+fn parse_key_protector_startup_key(guid: Uuid, metadata_entry: Vec<u8>, vmk: String) {
     let mut bek_headers = [0u8; 48];
     let mut bek_content = [0u8; 108];
-    
+
     bek_headers.copy_from_slice(&BEK_HEADER_TEMPLATE[0..48]);
     bek_content.copy_from_slice(&BEK_CONTENT_TEMPLATE[0..108]);
 
-    bek_headers = set_bek_header_vars(guid,bek_headers.clone());
+    bek_headers = set_bek_header_vars(guid, bek_headers.clone());
 
     // Retrieve MAC, nonce and encrypted startup key from FVE Metadata Entry
     let mut nonce_raw = [0u8; 12];
     let mut mac_raw = [0u8; 16];
     let mut payload_raw = [0u8; 44];
     let mut offset: usize = 0x00;
-    let mut size_sub_entry = [0u8;2];
+    let mut size_sub_entry = [0u8; 2];
     loop {
-        size_sub_entry.copy_from_slice(&metadata_entry[0x24+offset..0x24+offset+0x02]);
+        size_sub_entry.copy_from_slice(&metadata_entry[0x24 + offset..0x24 + offset + 0x02]);
         let mut sub_entry = vec![0u8; usize::from(u16::from_le_bytes(size_sub_entry))];
-        sub_entry.copy_from_slice(&metadata_entry[0x24+offset..0x24+offset+usize::from(u16::from_le_bytes(size_sub_entry))]);
-        if sub_entry[0x04..0x06] == [0x04,0x00] {
+        sub_entry.copy_from_slice(
+            &metadata_entry
+                [0x24 + offset..0x24 + offset + usize::from(u16::from_le_bytes(size_sub_entry))],
+        );
+        if sub_entry[0x04..0x06] == [0x04, 0x00] {
             //println!("[i] Found the sub-entry containing the startup key.");
             //println!("[i] Sub-entry :\t{:0>2x?}", sub_entry);
-            nonce_raw.copy_from_slice(&sub_entry[0x14..0x14+12]);
-            mac_raw.copy_from_slice(&sub_entry[0x20..0x20+16]);
-            payload_raw.copy_from_slice(&sub_entry[0x30..0x30+44]);
+            nonce_raw.copy_from_slice(&sub_entry[0x14..0x14 + 12]);
+            mac_raw.copy_from_slice(&sub_entry[0x20..0x20 + 16]);
+            payload_raw.copy_from_slice(&sub_entry[0x30..0x30 + 44]);
             //println!("[i] Nonce :\t{:0>2x?}", nonce_raw);
             //println!("[i] MAC :\t{:0>2x?}", mac_raw);
             //println!("[i] Payload :\t{:0>2x?}", payload_raw);
-            break
+            break;
         } else {
-            offset+=usize::from(u16::from_le_bytes(size_sub_entry));
+            offset += usize::from(u16::from_le_bytes(size_sub_entry));
         }
     }
 
@@ -587,7 +563,7 @@ fn parse_key_protector_startup_key(
     let vmk_raw = decode_hex(&vmk).unwrap();
     let cipher = Aes256Ccm::new_from_slice(&vmk_raw).unwrap();
     let nonce_bytes: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_raw);
-    let payload_mac = &[payload_raw.to_vec(),mac_raw.to_vec()].concat();
+    let payload_mac = &[payload_raw.to_vec(), mac_raw.to_vec()].concat();
     let decrypted = cipher.decrypt(nonce_bytes, payload_mac.as_ref());
 
     //println!("[i] VMK :\t\t{}",vmk);
@@ -603,7 +579,7 @@ fn parse_key_protector_startup_key(
     };
     //println!("[i] Unparsed plaintext :\t{:0>2x?}",plaintext);
     plaintext = plaintext[24..plaintext.len()].to_string();
-    println!("[i] Startup Key :\t{}",plaintext);
+    println!("[i] Startup Key :\t{}", plaintext);
 
     let bek_content_size = (bek_content.len() as u16).to_le_bytes();
     bek_content[0..2].copy_from_slice(&bek_content_size);
@@ -611,7 +587,7 @@ fn parse_key_protector_startup_key(
     bek_content[24..32].copy_from_slice(&nonce_raw[0..8]);
     bek_content[76..108].copy_from_slice(&decrypted.clone().unwrap()[12..decrypted.unwrap().len()]);
 
-    let bek_headers_size = ((bek_content.len() as u32)+(bek_headers.len() as u32)).to_le_bytes();
+    let bek_headers_size = ((bek_content.len() as u32) + (bek_headers.len() as u32)).to_le_bytes();
     bek_headers[0..4].copy_from_slice(&bek_headers_size);
     bek_headers[12..16].copy_from_slice(&bek_headers_size);
     // Printing BEK header
@@ -621,7 +597,7 @@ fn parse_key_protector_startup_key(
 
     let bek_file = [bek_headers.to_vec(), bek_content.to_vec()].concat();
     // println!("[i] BEK file :\n{:0>2x?}", bek_file);
-    let filename = guid.to_string()+".bek";
+    let filename = guid.to_string() + ".bek";
     let new_file = File::create(filename.clone());
     match new_file {
         Ok(mut file) => {
@@ -630,142 +606,208 @@ fn parse_key_protector_startup_key(
             } else {
                 eprintln!("[!] Error encountered while writing the External Key at ./{filename}")
             };
-        },
-        Err(error) => eprintln!("[i] Error while creating the BEK file : {}", error)
+        }
+        Err(error) => eprintln!("[i] Error while creating the BEK file : {}", error),
     }
 }
 
-fn parse_metadata_entries(file: &mut File, offset: u64, vmk: String, cli: &Cli, next_nonce_counter: u32) -> (String, String, String) {
+fn parse_metadata_entries(
+    file: &mut File,
+    offsets: [u64; 3],
+    vmk: String,
+    cli: &Cli,
+    next_nonce_counter: u32,
+) -> (String, String, String) {
     let mut _nonce = String::from("");
     let mut _mac = String::from("");
     let mut _payload = String::from("");
     let mut get_size = [0u8; 0x2];
-    let mut cursor = offset;
-    let mut metadata_entries : Vec<u8> = Vec::new();
+    let key_vmk = Aes256Ccm::generate_key(&mut OsRng);
 
-    println!("\n[i] Reading FVE Metadata entries.\n[i] The offset of the metadata entries is at 0x{offset:x}.");
+    for (counter, offset) in offsets.iter().enumerate() {
+        let mut cursor = *offset;
+        let mut metadata_entries: Vec<u8> = Vec::new();
 
-    loop {
-        // Retrieves key protector size
-        file.seek(SeekFrom::Start(cursor)).unwrap();
-        file.read_exact(&mut get_size).unwrap();
-        let mut size_raw: [u8; 2] = [0; 2];
-        size_raw.copy_from_slice(&get_size[0x00..0x02]);
-        let size: usize = usize::from(u16::from_le_bytes(size_raw));
+        println!(
+            "\n[i] Reading FVE Metadata entries in the block n°{}.\n[i] The offset of the metadata entries is at 0x{offset:x}.",
+            counter + 1
+        );
 
-        // Pass if size is too big, or 0,
-        if size > 0 && size < 1000 {
-            // Retrieves metadata header according to retrieved size
-            let mut metadata_entry = vec![0u8; size];
+        loop {
+            // Retrieves key protector size
             file.seek(SeekFrom::Start(cursor)).unwrap();
-            file.read_exact(&mut metadata_entry).unwrap();
-            //println!("{:0>2x?}\n", metadata_entry);
-            metadata_entries.append(&mut metadata_entry.clone());
+            file.read_exact(&mut get_size).unwrap();
+            let mut size_raw: [u8; 2] = [0; 2];
+            size_raw.copy_from_slice(&get_size[0x00..0x02]);
+            let size: usize = usize::from(u16::from_le_bytes(size_raw));
 
-            let mut entry_type_raw: [u8; 2] = [0; 2];
-            let mut datum_raw: [u8; 2] = [0; 2];
+            // Pass if size is too big, or 0,
+            if size > 0 && size < 1000 {
+                // Retrieves metadata header according to retrieved size
+                let mut metadata_entry = vec![0u8; size];
+                file.seek(SeekFrom::Start(cursor)).unwrap();
+                file.read_exact(&mut metadata_entry).unwrap();
+                //println!("{:0>2x?}\n", metadata_entry);
+                metadata_entries.append(&mut metadata_entry.clone());
 
-            entry_type_raw.copy_from_slice(&metadata_entry[0x02..0x04]);
-            datum_raw.copy_from_slice(&metadata_entry[0x04..0x06]);
+                let mut entry_type_raw: [u8; 2] = [0; 2];
+                let mut datum_raw: [u8; 2] = [0; 2];
 
-            let entry_type = get_entry_type(u16::from_le_bytes(entry_type_raw));
-            let datum_type = get_datum_type(u16::from_le_bytes(datum_raw));
+                entry_type_raw.copy_from_slice(&metadata_entry[0x02..0x04]);
+                datum_raw.copy_from_slice(&metadata_entry[0x04..0x06]);
 
-            //println!("[i] Entry type :\t\t{entry_type:?}\n[i] Datum type :\t\t{datum_type:?}");
-            if entry_type == EntryType::Vmk && datum_type == DatumType::Vmk {
-                println!("[i] Found an entry containing a Key Protector. Continuing...");
-                let mut key_protector_type_raw: [u8; 2] = [0; 2];
-                key_protector_type_raw.copy_from_slice(&metadata_entry[0x22..0x24]);
-                let mut key_protector_guid_raw: [u8; 16] = [0; 16];
-                key_protector_guid_raw.copy_from_slice(&metadata_entry[0x8..0x18]);
-                let guid = Uuid::from_bytes_le(key_protector_guid_raw);
-                let key_protector_type =
-                    get_protector_type(u16::from_le_bytes(key_protector_type_raw)
-                );
+                let entry_type = get_entry_type(u16::from_le_bytes(entry_type_raw));
+                let datum_type = get_datum_type(u16::from_le_bytes(datum_raw));
 
-                match key_protector_type {
-                    ProtectorType::RecoveryPassword => (_nonce, _mac, _payload) = parse_key_protector_recovery_password(guid, metadata_entry),
-                    ProtectorType::StartupKey => {
-                        println!(
-                            "[i] A Startup Key appears to be configured.\n[i] The Startup Key has the following GUID :\t\t{{{}}}",
-                            guid.to_string().to_uppercase()
-                        );
-                        if cli.bek {
-                            parse_key_protector_startup_key(guid, metadata_entry, vmk.clone())
-                        } else {
-                            println!("[!] The Startup Key was not extracted. To extract it use -b/--bek.")
+                //println!("[i] Entry type :\t\t{entry_type:?}\n[i] Datum type :\t\t{datum_type:?}");
+                if entry_type == EntryType::Vmk && datum_type == DatumType::Vmk && counter == 2 {
+                    println!("[i] Found an entry containing a Key Protector. Continuing...");
+                    let mut key_protector_type_raw: [u8; 2] = [0; 2];
+                    key_protector_type_raw.copy_from_slice(&metadata_entry[0x22..0x24]);
+                    let mut key_protector_guid_raw: [u8; 16] = [0; 16];
+                    key_protector_guid_raw.copy_from_slice(&metadata_entry[0x8..0x18]);
+                    let guid = Uuid::from_bytes_le(key_protector_guid_raw);
+                    let key_protector_type =
+                        get_protector_type(u16::from_le_bytes(key_protector_type_raw));
+
+                    match key_protector_type {
+                        ProtectorType::RecoveryPassword => {
+                            (_nonce, _mac, _payload) =
+                                parse_key_protector_recovery_password(guid, metadata_entry)
                         }
-                    },
-                    _ => println!(
-                        "[i] This entry contains a VMK protected using a {:?} Key Protector.\n[i] The Key Protector has the following GUID :\t\t{{{}}}",
-                        key_protector_type,
-                        guid.to_string().to_uppercase()
-                    ),
-                }
-            } else if entry_type == EntryType::VolumeHeaderBlock && datum_type == DatumType::OffsetAndSize && cli.addbek {
-                file.seek(SeekFrom::Start(cursor+u64::from(u16::from_le_bytes(size_raw)))).unwrap();
-                file.read_exact(&mut get_size).unwrap();
-                put_external_key(file, offset, cursor-offset, ((cursor+u64::from(u16::from_le_bytes(size_raw)))-offset)+(u16::from_le_bytes(get_size) as u64), vmk.clone(), next_nonce_counter);
-            };
-            cursor += u64::from(u16::from_le_bytes(size_raw));
-        } else {
-            eprintln!("[!] The size of the retrieved entry appears to be incoherent ({size} bytes), stopping. ");
-            let mut metadata_entry = vec![0u8; 100];
-            file.seek(SeekFrom::Start(cursor)).unwrap();
-            file.read_exact(&mut metadata_entry).unwrap();
-            metadata_entries.append(&mut metadata_entry);
-            //println!("{:0>2x?}", metadata_entries);
-            break;
-            //exit(1);
+                        ProtectorType::StartupKey => {
+                            println!(
+                                "[i] A Startup Key appears to be configured.\n[i] The Startup Key has the following GUID :\t\t{{{}}}",
+                                guid.to_string().to_uppercase()
+                            );
+                            if cli.bek {
+                                parse_key_protector_startup_key(guid, metadata_entry, vmk.clone())
+                            } else {
+                                println!(
+                                    "[!] The Startup Key was not extracted. To extract it use -b/--bek."
+                                )
+                            }
+                        }
+                        _ => println!(
+                            "[i] This entry contains a VMK protected using a {:?} Key Protector.\n[i] The Key Protector has the following GUID :\t\t{{{}}}",
+                            key_protector_type,
+                            guid.to_string().to_uppercase()
+                        ),
+                    }
+                } else if entry_type == EntryType::VolumeHeaderBlock
+                    && datum_type == DatumType::OffsetAndSize
+                    && cli.addbek
+                {
+                    file.seek(SeekFrom::Start(
+                        cursor + u64::from(u16::from_le_bytes(size_raw)),
+                    ))
+                    .unwrap();
+                    file.read_exact(&mut get_size).unwrap();
+                    put_external_key(
+                        file,
+                        *offset,
+                        cursor - *offset,
+                        ((cursor + u64::from(u16::from_le_bytes(size_raw))) - *offset)
+                            + (u16::from_le_bytes(get_size) as u64),
+                        vmk.clone(),
+                        next_nonce_counter,
+                        key_vmk,
+                    );
+                };
+                cursor += u64::from(u16::from_le_bytes(size_raw));
+            } else {
+                eprintln!(
+                    "[!] The size of the retrieved entry appears to be incoherent ({size} bytes), stopping."
+                );
+                let mut metadata_entry = vec![0u8; 100];
+                file.seek(SeekFrom::Start(cursor)).unwrap();
+                file.read_exact(&mut metadata_entry).unwrap();
+                metadata_entries.append(&mut metadata_entry);
+                //println!("{:0>2x?}", metadata_entries);
+                break;
+                //exit(1);
+            }
         }
     }
     (_nonce, _mac, _payload)
 }
 
-fn put_external_key(file: &mut File, offset: u64, cursor: u64, entries_size: u64, vmk: String, next_nonce_counter: u32) {
-    eprintln!("[i] This feature is not implemented yet, it will do nothing beside printing nonsense.");
+fn put_external_key(
+    file: &mut File,
+    offset: u64,
+    cursor: u64,
+    entries_size: u64,
+    vmk: String,
+    next_nonce_counter: u32,
+    key_vmk: GenericArray<u8, U32>,
+) {
+    eprintln!(
+        "[i] This feature is not implemented yet, it will do nothing beside printing nonsense."
+    );
 
     let mut external_key_entry = [0u8; 240];
     external_key_entry.copy_from_slice(&EXTERNAL_KEY_ENTRY_TEMPLATE[0..240]);
 
-    let now = unix_to_filetime(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+    let now = unix_to_filetime(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    );
 
     let key_external_key = decode_hex(&vmk).unwrap();
     let cipher_external_key = Aes256Ccm::new_from_slice(&key_external_key).unwrap();
-    let nonce_bytes_external_key = [now, ((next_nonce_counter as u64)).to_le_bytes()].concat()[0..12].to_vec(); 
+    let nonce_bytes_external_key =
+        [now, (next_nonce_counter as u64).to_le_bytes()].concat()[0..12].to_vec();
 
-    let key_vmk = Aes256Ccm::generate_key(&mut OsRng);
     let cipher_vmk = Aes256Ccm::new(&key_vmk);
-    let nonce_bytes_vmk = [now,((next_nonce_counter as u64)+1).to_le_bytes()].concat()[0..12].to_vec();
+    let nonce_bytes_vmk =
+        [now, ((next_nonce_counter as u64) + 1).to_le_bytes()].concat()[0..12].to_vec();
 
-    println!("[i] Key used to encrypt the External Key :\t{:0>2x?}",key_external_key);
-    println!("[i] Key used to encrypt the VMK :\t\t{:0>2x?}",key_vmk);
+    println!(
+        "[i] Key used to encrypt the External Key :\t{:0>2x?}",
+        key_external_key
+    );
+    println!("[i] Key used to encrypt the VMK :\t\t{:0>2x?}", key_vmk);
 
     println!("[i] Nonce for external key :\t{nonce_bytes_external_key:0>2x?}");
     println!("[i] Nonce for VMK:\t\t{nonce_bytes_vmk:0>2x?}");
 
-    let nonce_and_counter_external_key: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_external_key);
+    let nonce_and_counter_external_key: &GenericArray<_, U12> =
+        GenericArray::from_slice(&nonce_bytes_external_key);
     let nonce_and_counter_vmk: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_vmk);
 
-    let payload_ek = [EXTERNAL_KEY_HEADER_TEMPLATE.to_vec(),key_vmk.to_vec()].concat();
-    let payload_vmk = [VMK_HEADER_TEMPLATE.to_vec(),key_external_key.to_vec()].concat();
+    let payload_ek = [EXTERNAL_KEY_HEADER_TEMPLATE.to_vec(), key_vmk.to_vec()].concat();
+    let payload_vmk = [VMK_HEADER_TEMPLATE.to_vec(), key_external_key.to_vec()].concat();
 
-    let ciphertext_external_key = cipher_external_key.encrypt(nonce_and_counter_external_key, payload_ek.as_ref());
+    let ciphertext_external_key =
+        cipher_external_key.encrypt(nonce_and_counter_external_key, payload_ek.as_ref());
     let ciphertext_vmk = cipher_vmk.encrypt(nonce_and_counter_vmk, payload_vmk.as_ref());
 
-    let encrypted_external_key = ciphertext_external_key.clone().unwrap()[0..ciphertext_external_key.clone().unwrap().len()-16].to_vec();
-    let encrypted_vmk = ciphertext_vmk.clone().unwrap()[0..ciphertext_vmk.clone().unwrap().len()-16].to_vec();
+    let encrypted_external_key = ciphertext_external_key.clone().unwrap()
+        [0..ciphertext_external_key.clone().unwrap().len() - 16]
+        .to_vec();
+    let encrypted_vmk =
+        ciphertext_vmk.clone().unwrap()[0..ciphertext_vmk.clone().unwrap().len() - 16].to_vec();
 
     println!("[i] Payload for external key :\t{encrypted_external_key:0>2x?}");
     println!("[i] Payload for VMK:\t\t{encrypted_vmk:0>2x?}");
 
-    let mac_external_key = ciphertext_external_key.clone().unwrap()[ciphertext_external_key.clone().unwrap().len()-16..ciphertext_external_key.unwrap().len()].to_vec();
-    let mac_vmk = ciphertext_vmk.clone().unwrap()[ciphertext_vmk.clone().unwrap().len()-16..ciphertext_vmk.unwrap().len()].to_vec();
+    let mac_external_key = ciphertext_external_key.clone().unwrap()[ciphertext_external_key
+        .clone()
+        .unwrap()
+        .len()
+        - 16
+        ..ciphertext_external_key.unwrap().len()]
+        .to_vec();
+    let mac_vmk = ciphertext_vmk.clone().unwrap()
+        [ciphertext_vmk.clone().unwrap().len() - 16..ciphertext_vmk.unwrap().len()]
+        .to_vec();
 
     println!("[i] MAC for external key :\t{mac_external_key:0>2x?}");
     println!("[i] MAC for VMK:\t\t{mac_vmk:0>2x?}");
 
-    // Entry crafting 
+    // Entry crafting
     // GUID
     external_key_entry[0x8..0x18].copy_from_slice(&CUSTOM_EXTERNAL_KEY_GUID.to_bytes_le());
     // FILETIMES
@@ -773,8 +815,9 @@ fn put_external_key(file: &mut File, offset: u64, cursor: u64, entries_size: u64
     external_key_entry[0x58..0x60].copy_from_slice(&now);
     external_key_entry[0xa8..0xb0].copy_from_slice(&now);
     // Nonce counters
-    external_key_entry[0x60..0x64].copy_from_slice(&((next_nonce_counter as u32)).to_le_bytes());
-    external_key_entry[0xb0..0xb4].copy_from_slice(&((next_nonce_counter as u32)+1).to_le_bytes());
+    external_key_entry[0x60..0x64].copy_from_slice(&(next_nonce_counter as u32).to_le_bytes());
+    external_key_entry[0xb0..0xb4]
+        .copy_from_slice(&((next_nonce_counter as u32) + 1).to_le_bytes());
     // MACs
     external_key_entry[0x64..0x74].copy_from_slice(&mac_external_key);
     external_key_entry[0xb4..0xc4].copy_from_slice(&mac_vmk);
@@ -785,19 +828,26 @@ fn put_external_key(file: &mut File, offset: u64, cursor: u64, entries_size: u64
     //println!("{external_key_entry:0>2x?}");
 
     // Creating BEK file
-    parse_key_protector_startup_key(CUSTOM_EXTERNAL_KEY_GUID,external_key_entry.to_vec(),vmk);
+    parse_key_protector_startup_key(CUSTOM_EXTERNAL_KEY_GUID, external_key_entry.to_vec(), vmk);
 
     // Adding entry to the other entries
     let mut initial_entries = vec![0u8; entries_size as usize];
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.read_exact(&mut initial_entries).unwrap();
-    println!("{:0>2x?}",initial_entries[0..(cursor as usize)].to_vec());
-    let mut size_fve_header_block = [0u8;2];
-    file.seek(SeekFrom::Start(offset+cursor)).unwrap();
+    println!("{:0>2x?}", initial_entries[0..(cursor as usize)].to_vec());
+    let mut size_fve_header_block = [0u8; 2];
+    file.seek(SeekFrom::Start(offset + cursor)).unwrap();
     file.read_exact(&mut size_fve_header_block).unwrap();
-    let new_entries = [initial_entries[0..(cursor as usize)].to_vec(), external_key_entry.to_vec(), initial_entries[(cursor as usize)..(cursor as usize)+(u16::from_le_bytes(size_fve_header_block) as usize)].to_vec()].concat();
-    println!("{:0>2x?}",new_entries);
-    println!("{:0>2x?}",size_fve_header_block);
+    let new_entries = [
+        initial_entries[0..(cursor as usize)].to_vec(),
+        external_key_entry.to_vec(),
+        initial_entries[(cursor as usize)
+            ..(cursor as usize) + (u16::from_le_bytes(size_fve_header_block) as usize)]
+            .to_vec(),
+    ]
+    .concat();
+    println!("{:0>2x?}", new_entries);
+    println!("{:0>2x?}", size_fve_header_block);
 }
 
 fn main() {
@@ -811,11 +861,15 @@ fn main() {
         Some(disk) => {
             // Retrieves offsets where the first FVE metadata block is located
             let mut file = File::open(disk.clone()).unwrap();
-            let offsets: [u64;3] = find_fve_metadata_block(disk);
+            let offsets: [u64; 3] = find_fve_metadata_block(disk);
 
-            let mut offsets_metdata_entries = [0u64;3];
-            for (counter,offset) in offsets.iter().enumerate() {
-                println!("\n[i] Analysing Metadata Block {} at 0x{:x}.",counter+1, offset);
+            let mut offsets_metdata_entries = [0u64; 3];
+            for (counter, offset) in offsets.iter().enumerate() {
+                println!(
+                    "\n[i] Analysing Metadata Block {} at 0x{:x}.",
+                    counter + 1,
+                    offset
+                );
 
                 // Parses metadata headers
                 file.seek(SeekFrom::Start(offset + 10)).unwrap();
@@ -825,7 +879,8 @@ fn main() {
                 let mut volume_guid_raw = [0u8; 16];
                 let _ = file.read_exact(&mut volume_guid_raw).is_ok();
                 let volume_guid = Uuid::from_bytes_le(volume_guid_raw);
-                println!("[i] Volume identifier :\t\t{{{}}}",
+                println!(
+                    "[i] Volume identifier :\t\t{{{}}}",
                     volume_guid.to_string().to_uppercase()
                 );
                 let mut next_nonce_counter_raw = [0u8; 4];
@@ -833,9 +888,16 @@ fn main() {
                 let next_nonce_counter = u32::from_le_bytes(next_nonce_counter_raw);
                 println!("[i] Next nonce counter : \t{next_nonce_counter}");
                 if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
-                    offsets_metdata_entries[counter] = get_metadata_entries_offset(&mut file, *offset);
+                    offsets_metdata_entries[counter] =
+                        get_metadata_entries_offset(&mut file, *offset);
                     if counter == 2 {
-                        (nonce, mac, payload) = parse_metadata_entries(&mut file, offsets_metdata_entries[0], vmk.clone(), &cli, next_nonce_counter);
+                        (nonce, mac, payload) = parse_metadata_entries(
+                            &mut file,
+                            offsets_metdata_entries,
+                            vmk.clone(),
+                            &cli,
+                            next_nonce_counter,
+                        );
                         recovery_pass = decrypt_recovery_password(
                             vmk.clone(),
                             nonce.clone(),
@@ -858,12 +920,8 @@ fn main() {
                 );
                 exit(1)
             }
-            recovery_pass = decrypt_recovery_password(
-                vmk.clone(), 
-                nonce.clone(), 
-                mac.clone(), 
-                payload.clone()
-            );
+            recovery_pass =
+                decrypt_recovery_password(vmk.clone(), nonce.clone(), mac.clone(), payload.clone());
         }
     }
 

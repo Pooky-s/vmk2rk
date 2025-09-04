@@ -399,9 +399,9 @@ fn set_bek_header_vars(guid: Uuid, mut bek_headers: [u8; 48]) -> [u8; 48] {
     bek_headers
 }
 
-fn find_fve_metadata_block(disk: String) -> (u64, u64, u64) {
+fn find_fve_metadata_block(disk: String) -> [u64;3] {
     // Finds the offset at which the first FVE metadata block is located
-    let mut offsets: (u64, u64, u64) = (0u64, 0u64, 0u64);
+    let mut offsets: [u64;3] = [0u64;3];
     let disk_path = Path::new(&disk);
     let gpt_disk = GptConfig::new().writable(false).open(disk_path).unwrap();
     let partitions = gpt_disk.partitions();
@@ -448,7 +448,7 @@ fn find_fve_metadata_block(disk: String) -> (u64, u64, u64) {
                 "[i] BitLocker identifier :\t{{{}}} ",
                 bitlocker_identifier.to_string().to_uppercase()
             );
-            offsets = (start_byte_offset + u64::from_le_bytes(offset_metadata_block_1), start_byte_offset + u64::from_le_bytes(offset_metadata_block_2), start_byte_offset + u64::from_le_bytes(offset_metadata_block_3));
+            offsets = [start_byte_offset + u64::from_le_bytes(offset_metadata_block_1), start_byte_offset + u64::from_le_bytes(offset_metadata_block_2), start_byte_offset + u64::from_le_bytes(offset_metadata_block_3)];
         }
     }
     offsets
@@ -811,36 +811,39 @@ fn main() {
         Some(disk) => {
             // Retrieves offsets where the first FVE metadata block is located
             let mut file = File::open(disk.clone()).unwrap();
-            let offsets: (u64, u64, u64) = find_fve_metadata_block(disk);
-            let offset_metadata_block_1 = offsets.0;
+            let offsets: [u64;3] = find_fve_metadata_block(disk);
 
-            println!("[i] Metadata blocks' offsets : {offsets:x?}");
+            let mut offsets_metdata_entries = [0u64;3];
+            for (counter,offset) in offsets.iter().enumerate() {
+                println!("\n[i] Analysing Metadata Block {} at 0x{:x}.",counter+1, offset);
 
-            // Parses metadata headers
-            file.seek(SeekFrom::Start(offset_metadata_block_1 + 10)).unwrap();
-            let mut version = [0u8; 2];
-            let _ = file.read_exact(&mut version).is_ok();
-            file.seek(SeekFrom::Start(offset_metadata_block_1 + 80)).unwrap();
-            let mut volume_guid_raw = [0u8; 16];
-            let _ = file.read_exact(&mut volume_guid_raw).is_ok();
-            let volume_guid = Uuid::from_bytes_le(volume_guid_raw);
-            println!(
-                "\n[i] Reading FVE Metadata block 1 located at 0x{offset_metadata_block_1:x}.\n[i] Volume identifier :\t\t{{{}}}",
-                volume_guid.to_string().to_uppercase()
-            );
-            let mut next_nonce_counter_raw = [0u8; 4];
-            let _ = file.read_exact(&mut next_nonce_counter_raw).is_ok();
-            let next_nonce_counter = u32::from_le_bytes(next_nonce_counter_raw);
-            println!("[i] Next nonce counter : \t{next_nonce_counter}");
-            if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
-                let offset_metadata_entry_1 = get_metadata_entries_offset(&mut file, offset_metadata_block_1);
-                (nonce, mac, payload) = parse_metadata_entries(&mut file, offset_metadata_entry_1, vmk.clone(), &cli, next_nonce_counter);
-                recovery_pass = decrypt_recovery_password(
-                    vmk.clone(),
-                    nonce.clone(),
-                    mac.clone(),
-                    payload.clone(),
+                // Parses metadata headers
+                file.seek(SeekFrom::Start(offset + 10)).unwrap();
+                let mut version = [0u8; 2];
+                let _ = file.read_exact(&mut version).is_ok();
+                file.seek(SeekFrom::Start(offset + 80)).unwrap();
+                let mut volume_guid_raw = [0u8; 16];
+                let _ = file.read_exact(&mut volume_guid_raw).is_ok();
+                let volume_guid = Uuid::from_bytes_le(volume_guid_raw);
+                println!("[i] Volume identifier :\t\t{{{}}}",
+                    volume_guid.to_string().to_uppercase()
                 );
+                let mut next_nonce_counter_raw = [0u8; 4];
+                let _ = file.read_exact(&mut next_nonce_counter_raw).is_ok();
+                let next_nonce_counter = u32::from_le_bytes(next_nonce_counter_raw);
+                println!("[i] Next nonce counter : \t{next_nonce_counter}");
+                if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
+                    offsets_metdata_entries[counter] = get_metadata_entries_offset(&mut file, *offset);
+                    if counter == 2 {
+                        (nonce, mac, payload) = parse_metadata_entries(&mut file, offsets_metdata_entries[0], vmk.clone(), &cli, next_nonce_counter);
+                        recovery_pass = decrypt_recovery_password(
+                            vmk.clone(),
+                            nonce.clone(),
+                            mac.clone(),
+                            payload.clone(),
+                        );
+                    }
+                }
             }
         }
         None => {

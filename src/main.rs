@@ -470,6 +470,11 @@ fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
 
         metadata_addr = offset + 0x78 + u64::from(u16::from_le_bytes(volume_name_size_raw) - 8);
     }
+    //let size_header_block= metadata_addr-offset;
+    //let mut buffer = vec![0u8;usize::from(size_header_block as u16)];
+    //file.seek(SeekFrom::Start(offset)).unwrap();
+    //file.read_exact(&mut buffer).unwrap();
+    //println!("{:0>2x?}",buffer);
     metadata_addr
 }
 
@@ -834,6 +839,7 @@ fn put_external_key(
     let mut initial_entries = vec![0u8; entries_size as usize];
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.read_exact(&mut initial_entries).unwrap();
+    eprintln!("{initial_entries:0>2x?}");
     println!("{:0>2x?}", initial_entries[0..(cursor as usize)].to_vec());
     let mut size_fve_header_block = [0u8; 2];
     file.seek(SeekFrom::Start(offset + cursor)).unwrap();
@@ -846,8 +852,11 @@ fn put_external_key(
             .to_vec(),
     ]
     .concat();
-    println!("{:0>2x?}", new_entries);
-    println!("{:0>2x?}", size_fve_header_block);
+    // Validation entry calculation :
+    // TODO. Hint : The hash is calculated using data from the address retrieved by find_fve_metadata_block to the VolumeHeaderBLock entry included. It uses SHA256.
+    // The validation entry header should be investigated. 
+    //println!("{:0>2x?}", new_entries);
+    //println!("{:0>2x?}", size_fve_header_block);
 }
 
 fn main() {

@@ -68,3 +68,6 @@ Upon successfully retrieving a Recovery Password or a Startup Key, it is possibl
 - Idea is coming from [@pascal-gujer](https://github.com/pascal-gujer) who raised an [issue](https://github.com/Aorimn/dislocker/issues/294) on the [dislocker](https://github.com/Aorimn/dislocker) project.
 - [Implementing BitLocker Drive Encryption for forensic analysis](https://pdf4pro.com/cdn/implementing-bitlocker-drive-encryption-for-19a515.pdf) by Jesse D. Kornblum 
 - [libbde](https://github.com/libyal/libbde/blob/main/documentation/BitLocker%20Drive%20Encryption%20%28BDE%29%20format.asciidoc)'s documentation
+- Geoff Chappell's [analysis](https://www.geoffchappell.com/studies/windows/km/fvevol/structs/datum/index.htm) of the FVE_DATUM structure.
+- Aurélien Bordes' [whitepaper](https://www.sstic.org/media/SSTIC2011/SSTIC-actes/bitlocker/SSTIC2011-Article-bitlocker-bordes.pdf)  
+- Leon Voigt's [thesis](https://monami.hs-mittweida.de/frontdoor/deliver/index/docId/16055/file/Masterarbeit_LeonVoigt_CY21wC-M_46847.pdf       )

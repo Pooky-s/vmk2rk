@@ -18,6 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{convert::TryInto, io::Write, vec};
 use std::{fmt::Write as Fmt_Write, num::ParseIntError};
 use uuid::Uuid;
+use sha2::{Sha256, Digest};
 
 // Declare constants (needed to verify the offset found)
 const VISTA_SIGNATURE: &[u8] = b"\xeb\x52\x90-FVE-FS-";
@@ -431,7 +432,7 @@ fn find_fve_metadata_block(disk: String) -> [u64; 3] {
     offsets
 }
 
-fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
+fn get_metadata_entries_offset(file: &mut File, offset: u64) -> (u64, Vec<u8>) {
     // Returns the metadata entries offset
     let mut metadata_addr = 0u64;
     let mut get_size = [0u8; 10];
@@ -470,12 +471,12 @@ fn get_metadata_entries_offset(file: &mut File, offset: u64) -> u64 {
 
         metadata_addr = offset + 0x78 + u64::from(u16::from_le_bytes(volume_name_size_raw) - 8);
     }
-    //let size_header_block= metadata_addr-offset;
-    //let mut buffer = vec![0u8;usize::from(size_header_block as u16)];
-    //file.seek(SeekFrom::Start(offset)).unwrap();
-    //file.read_exact(&mut buffer).unwrap();
-    //println!("{:0>2x?}",buffer);
-    metadata_addr
+    let size_header_block= metadata_addr-offset;
+    let mut buffer = vec![0u8;usize::from(size_header_block as u16)];
+    file.seek(SeekFrom::Start(offset)).unwrap();
+    file.read_exact(&mut buffer).unwrap();
+    println!("{:0>2x?}",buffer);
+    (metadata_addr,buffer)
 }
 
 fn parse_key_protector_recovery_password(
@@ -622,6 +623,7 @@ fn parse_metadata_entries(
     vmk: String,
     cli: &Cli,
     next_nonce_counter: u32,
+    fve_metadata_block_header: Vec<u8>
 ) -> (String, String, String) {
     let mut _nonce = String::from("");
     let mut _mac = String::from("");
@@ -717,6 +719,7 @@ fn parse_metadata_entries(
                         vmk.clone(),
                         next_nonce_counter,
                         key_vmk,
+                        fve_metadata_block_header.clone()
                     );
                 };
                 cursor += u64::from(u16::from_le_bytes(size_raw));
@@ -745,6 +748,7 @@ fn put_external_key(
     vmk: String,
     next_nonce_counter: u32,
     key_vmk: GenericArray<u8, U32>,
+    fve_metadata_block_header: Vec<u8>
 ) {
     eprintln!(
         "[i] This feature is not implemented yet, it will do nothing beside printing nonsense."
@@ -839,8 +843,8 @@ fn put_external_key(
     let mut initial_entries = vec![0u8; entries_size as usize];
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.read_exact(&mut initial_entries).unwrap();
-    eprintln!("{initial_entries:0>2x?}");
-    println!("{:0>2x?}", initial_entries[0..(cursor as usize)].to_vec());
+    //eprintln!("{initial_entries:0>2x?}");
+    //println!("{:0>2x?}", initial_entries[0..(cursor as usize)].to_vec());
     let mut size_fve_header_block = [0u8; 2];
     file.seek(SeekFrom::Start(offset + cursor)).unwrap();
     file.read_exact(&mut size_fve_header_block).unwrap();
@@ -855,6 +859,16 @@ fn put_external_key(
     // Validation entry calculation :
     // TODO. Hint : The hash is calculated using data from the address retrieved by find_fve_metadata_block to the VolumeHeaderBLock entry included. It uses SHA256.
     // The validation entry header should be investigated. 
+    let information_block = [fve_metadata_block_header.clone(), new_entries].concat();
+    let test_information_block = [fve_metadata_block_header.clone(), initial_entries[0
+            ..(cursor as usize) + (u16::from_le_bytes(size_fve_header_block) as usize)]
+            .to_vec()].concat();
+    println!("{:0>2x?}", information_block);
+    eprintln!("{:0>2x?}", test_information_block);
+    let hash: [u8; 32] = *Sha256::digest(information_block).as_array().unwrap();
+    let test_hash: [u8; 32] = *Sha256::digest(test_information_block).as_array().unwrap();
+    println!("{:0>2x?}",hash);
+    eprintln!("{:0>2x?}",test_hash);
     //println!("{:0>2x?}", new_entries);
     //println!("{:0>2x?}", size_fve_header_block);
 }
@@ -873,6 +887,7 @@ fn main() {
             let offsets: [u64; 3] = find_fve_metadata_block(disk);
 
             let mut offsets_metdata_entries = [0u64; 3];
+            let mut _fve_metadata_block_header = Vec::new();
             for (counter, offset) in offsets.iter().enumerate() {
                 println!(
                     "\n[i] Analysing Metadata Block {} at 0x{:x}.",
@@ -897,7 +912,7 @@ fn main() {
                 let next_nonce_counter = u32::from_le_bytes(next_nonce_counter_raw);
                 println!("[i] Next nonce counter : \t{next_nonce_counter}");
                 if u16::from_le_bytes(version) == 1 || u16::from_le_bytes(version) == 2 {
-                    offsets_metdata_entries[counter] =
+                    (offsets_metdata_entries[counter], _fve_metadata_block_header) =
                         get_metadata_entries_offset(&mut file, *offset);
                     if counter == 2 {
                         (nonce, mac, payload) = parse_metadata_entries(
@@ -906,6 +921,7 @@ fn main() {
                             vmk.clone(),
                             &cli,
                             next_nonce_counter,
+                            _fve_metadata_block_header
                         );
                         recovery_pass = decrypt_recovery_password(
                             vmk.clone(),

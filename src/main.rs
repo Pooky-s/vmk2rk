@@ -225,27 +225,27 @@ const VALIDATION_HASH_HEADER_TEMPLATE: [u8; 12] = [
     long_about = "Key Protectors retrieval tool using a VMK and metadata from a disk."
 )]
 struct Cli {
-    /// VMK, key used to decrypt key protectors
+    /// VMK, key used to decrypt key protectors.
     #[arg(required = true, short, long, value_name = "Key", default_value_t = String::from("7e63180cb55e15fa62ff4a2cac1bec4ca2ae145b8b92b59b8674e1f2169bcc8d"))]
     vmk: String,
 
-    /// Nonce used to decrypt the Recovery Password
+    /// Nonce used to decrypt the Recovery Password.
     #[arg(short, long, value_name = "Nonce", default_value_t = String::from("a0d6eb7c2b03dc010f000000"))]
     nonce: String,
 
-    /// MAC used to decrypt the Recovery Password
+    /// MAC used to decrypt the Recovery Password.
     #[arg(short, long, value_name = "MAC", default_value_t = String::from("709fbe999a0b37582d230a7cdbc40ba0"))]
     mac: String,
 
-    /// Payload containing the encrypted Recovery Password
+    /// Payload containing the encrypted Recovery Password.
     #[arg(short, long, value_name = "Payload", default_value_t = String::from("487c4e3f137759409f626bae6e39d24e59d283b6b1e19db6678646ce"))]
     payload: String,
 
-    /// Disk from which Key Protectors are retrieved
+    /// Disk from which Key Protectors are retrieved.
     #[arg(short, long, value_name = "DISKPATH")]
     disk: Option<String>,
 
-    /// Create BEK (BitLocker External Key) file if the Key Protector is configured on the provided disk
+    /// Create BEK (BitLocker External Key) file if the Key Protector is configured on the provided disk.
     #[arg(short, long)]
     bek: bool,
 
@@ -762,10 +762,6 @@ fn put_external_key(
     key_vmk: GenericArray<u8, U32>,
     fve_metadata_block_header: Vec<u8>,
 ) {
-    eprintln!(
-        "[i] This feature is not implemented yet, it will do nothing beside printing nonsense."
-    );
-
     let mut external_key_entry = [0u8; 240];
     external_key_entry.copy_from_slice(&EXTERNAL_KEY_ENTRY_TEMPLATE[0..240]);
 

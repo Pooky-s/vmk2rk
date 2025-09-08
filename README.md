@@ -64,6 +64,7 @@ Upon successfully retrieving a Recovery Password or a Startup Key, it is possibl
 - [itertools](https://docs.rs/itertools/latest/itertools/)
 - [uuid](https://docs.rs/uuid/latest/uuid/)
 - [sha2](https://docs.rs/sha2/latest/sha2/)
+- [crc](https://docs.rs/crc/latest/crc/)
 
 ## Sources
 - Idea is coming from [@pascal-gujer](https://github.com/pascal-gujer) who raised an [issue](https://github.com/Aorimn/dislocker/issues/294) on the [dislocker](https://github.com/Aorimn/dislocker) project.

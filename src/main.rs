@@ -19,6 +19,7 @@ use std::{convert::TryInto, io::Write, vec};
 use std::{fmt::Write as Fmt_Write, num::ParseIntError};
 use uuid::Uuid;
 use sha2::{Sha256, Digest};
+use crc::{Crc, CRC_32_ISO_HDLC};
 
 // Declare constants (needed to verify the offset found)
 const VISTA_SIGNATURE: &[u8] = b"\xeb\x52\x90-FVE-FS-";
@@ -203,12 +204,20 @@ const CUSTOM_EXTERNAL_KEY_GUID: Uuid = Uuid::from_bytes_le([
     0x50, 0x6f, 0x6f, 0x6b, 0x79, 0x27, 0x20, 0x77, 0x61, 0x73, 0x20, 0x68, 0x65, 0x72, 0x65, 0x21,
 ]);
 
+const VALIDATION_ENTRY_HEADER: [u8; 8] = [
+    0x50, 0x00, 0x00, 0x00, 0x05, 0x00, 0x01, 0x00,
+];
+
 const EXTERNAL_KEY_HEADER_TEMPLATE: [u8; 12] = [
     0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x20, 0x00, 0x00,
 ];
 
 const VMK_HEADER_TEMPLATE: [u8; 12] = [
     0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00,
+];
+
+const VALIDATION_HASH_HEADER_TEMPLATE: [u8; 12] = [
+    0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x20, 0x00, 0x00,
 ];
 
 #[derive(Parser)]
@@ -859,16 +868,43 @@ fn put_external_key(
     // Validation entry calculation :
     // TODO. Hint : The hash is calculated using data from the address retrieved by find_fve_metadata_block to the VolumeHeaderBLock entry included. It uses SHA256.
     // The validation entry header should be investigated. 
-    let information_block = [fve_metadata_block_header.clone(), new_entries].concat();
+    let information_block = [fve_metadata_block_header.clone(), new_entries.clone()].concat();
     let test_information_block = [fve_metadata_block_header.clone(), initial_entries[0
             ..(cursor as usize) + (u16::from_le_bytes(size_fve_header_block) as usize)]
             .to_vec()].concat();
     println!("{:0>2x?}", information_block);
     eprintln!("{:0>2x?}", test_information_block);
-    let hash: [u8; 32] = *Sha256::digest(information_block).as_array().unwrap();
-    let test_hash: [u8; 32] = *Sha256::digest(test_information_block).as_array().unwrap();
-    println!("{:0>2x?}",hash);
-    eprintln!("{:0>2x?}",test_hash);
+    let validation_hash: [u8; 32] = *Sha256::digest(information_block.clone()).as_array().unwrap();
+    let test_validation_hash: [u8; 32] = *Sha256::digest(test_information_block.clone()).as_array().unwrap();
+    println!("{:0>2x?}",validation_hash);
+    eprintln!("{:0>2x?}",test_validation_hash);
+
+    let nonce_bytes_validation_hash =
+        [now, ((next_nonce_counter as u64) + 2).to_le_bytes()].concat()[0..12].to_vec();
+    let nonce_and_counter_validation_hash: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_validation_hash);
+    let payload_validation_hash = [VALIDATION_HASH_HEADER_TEMPLATE.to_vec(), validation_hash.to_vec()].concat();
+    let cipher_validation_hash = Aes256Ccm::new_from_slice(&key_external_key).unwrap();
+    let ciphertext_validation_hash_and_mac = cipher_validation_hash.encrypt(nonce_and_counter_validation_hash, payload_validation_hash.as_ref()).unwrap();
+    let ciphertext_validation_hash = ciphertext_validation_hash_and_mac[0..ciphertext_validation_hash_and_mac.clone().len()-16].to_vec();
+    let mac_validation_hash = ciphertext_validation_hash_and_mac[ciphertext_validation_hash_and_mac.clone().len()-16..ciphertext_validation_hash_and_mac.clone().len()].to_vec();
+    println!("{:0>4x?}",initial_entries[test_information_block.len()-fve_metadata_block_header.len()..initial_entries.len()].to_vec().len());
+    println!("{:0>4x?}",initial_entries[information_block.len()-fve_metadata_block_header.len()..initial_entries.len()].to_vec().len());
+    // The folowing is the crc32 checksum of the validation information (https://github.com/Aorimn/dislocker/blob/4ff070f0ea9e56948ab316fb76b91f54dd6727aa/include/dislocker/metadata/metadata.priv.h#L192)
+    println!("{:0>2x?}",initial_entries[test_information_block.len()-fve_metadata_block_header.len()+4..test_information_block.len()-fve_metadata_block_header.len()+8].to_vec());
+    const CRC32: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+    let crc32_information_block = CRC32.checksum(&information_block);
+    println!("{:0>2x?}",crc32_information_block.to_le_bytes());
+    let mut validation_entry: Vec<u8> = Vec::new();
+    validation_entry.append(&mut (initial_entries[test_information_block.len()-fve_metadata_block_header.len()..initial_entries.len()].to_vec().len() as u16).to_le_bytes().to_vec());
+    validation_entry.push(0x02);
+    validation_entry.push(0x00);
+    validation_entry.append(&mut crc32_information_block.to_le_bytes().to_vec());
+    validation_entry.append(&mut VALIDATION_ENTRY_HEADER.to_vec());
+    validation_entry.append(&mut nonce_and_counter_validation_hash.to_vec());
+    validation_entry.append(&mut mac_validation_hash.to_vec());
+    validation_entry.append(&mut ciphertext_validation_hash.to_vec());
+    println!("{:0>2x?}",validation_entry);
+    // Add next nonce counter modification
     //println!("{:0>2x?}", new_entries);
     //println!("{:0>2x?}", size_fve_header_block);
 }

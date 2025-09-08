@@ -249,7 +249,7 @@ struct Cli {
     #[arg(short, long)]
     bek: bool,
 
-    /// Add BEK (BitLocker External Key) to the provided disk (WARNING : DO NOT USE UNLESS YOU DON'T CARE ABOUT BREAKING THE TARGET DISK)
+    /// Add BEK (BitLocker External Key) to the provided disk. WARNING : DO NOT USE UNLESS YOU DON'T CARE ABOUT BREAKING THE TARGET DISK (This means make backups).
     #[arg(short, long)]
     addbek: bool,
 }

@@ -470,9 +470,10 @@ fn get_metadata_entries_offset(file: &mut File, offset: u64) -> (u64, Vec<u8>) {
         version_raw.clone_from_slice(&header[0x0a..0x0c]);
         let version = u16::from_le_bytes(version_raw);
 
+        //println!("{:0>2x?}",header);
         println!(
             "[i] Volume information :\t{}",
-            String::from_utf16le(&volume_name).unwrap()
+            String::from_utf16le(&volume_name).unwrap_or_default()
         );
         println!("[i] Metadata version :\t\t{version}");
 
@@ -643,6 +644,15 @@ fn parse_metadata_entries(
         let mut cursor = *offset + fve_metadata_block_header_size as u64;
         let mut metadata_entries: Vec<u8> = Vec::new();
 
+        // information_block.len()>>4
+        let mut validation_block_offset_raw = [0u8; 0x2];
+
+        file.seek(SeekFrom::Start(offset+8)).unwrap();
+        file.read_exact(&mut validation_block_offset_raw).unwrap();
+
+        let validation_block_offset = u16::from_le_bytes(validation_block_offset_raw)<<4;
+        println!("{:0>2x?} {}",validation_block_offset_raw,validation_block_offset);
+
         println!(
             "\n[i] Reading FVE Metadata entries in the block n°{}.\n[i] The offset of the metadata entries is at 0x{:x}.",
             counter + 1,
@@ -657,8 +667,8 @@ fn parse_metadata_entries(
             size_raw.copy_from_slice(&get_size[0x00..0x02]);
             let size: usize = usize::from(u16::from_le_bytes(size_raw));
 
-            // Pass if size is too big, or 0,
-            if size > 0 && size < 1000 {
+            if cursor-offset < (validation_block_offset as u64 - fve_metadata_block_header_size as u64) {
+
                 // Retrieves metadata header according to retrieved size
                 let mut metadata_entry = vec![0u8; size];
                 file.seek(SeekFrom::Start(cursor)).unwrap();
@@ -704,6 +714,7 @@ fn parse_metadata_entries(
                                 )
                             }
                         }
+
                         _ => println!(
                             "[i] This entry contains a VMK protected using a {:?} Key Protector.\n[i] The Key Protector has the following GUID :\t\t{{{}}}",
                             key_protector_type,
@@ -736,7 +747,7 @@ fn parse_metadata_entries(
                 cursor += u64::from(u16::from_le_bytes(size_raw));
             } else {
                 eprintln!(
-                    "[!] The size of the retrieved entry appears to be incoherent ({size} bytes), stopping."
+                    "[!] No more entries to analyze. Stopping..."
                 );
                 let mut metadata_entry = vec![0u8; 100];
                 file.seek(SeekFrom::Start(cursor)).unwrap();

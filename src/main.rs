@@ -27,6 +27,65 @@ const SEVEN_SIGNATURE: &[u8] = b"\xeb\x58\x90-FVE-FS-";
 const TOGO_SIGNATURE: &[u8] = b"\xeb\x58\x90MSWIN4.1";
 const LB_SIZE: LogicalBlockSize = LogicalBlockSize::Lb512;
 
+struct FILETIME {
+    array: [u8; 8],
+}
+
+impl FILETIME {
+    fn from_unix(unix_time: u64) -> Self {
+        // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
+        const EPOCH_DIFF: u64 = 11_644_473_600;
+        const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
+
+        let filetime_intervals: u64 = (unix_time + EPOCH_DIFF) * HUNDRED_NS_PER_SEC;
+
+        // Convert into little-endian byte array
+        let array = filetime_intervals.to_le_bytes();
+        FILETIME { array }
+    }
+}
+
+enum FVEData {
+    NestedEntry(Box<FVE_Metadata_Entry>),
+    Utf8String(String),
+    Raw(Vec<u8>),
+}
+
+struct FVE_Metadata_Entry {
+    entry_size: u16,
+    entry_type: EntryType,
+    datum_type: DatumType,
+    version: u16,
+    data: FVEData,
+}
+
+impl FVE_Metadata_Entry {}
+
+struct FVE_Metadata_Header {
+    size: u32,
+    version: u32,
+    volume_guid: Uuid,
+    next_nonce_counter: u32,
+    encryption_method: EncryptionMethod,
+    creation_time: FILETIME,
+}
+
+impl FVE_Metadata_Header {}
+
+struct FVE_Metadata_Block {
+    signature: String,
+    validation_block_offset: u16,
+    version: u16,
+    fve_metadata_header: FVE_Metadata_Header,
+    fve_metadata_entries: Vec<FVE_Metadata_Entry>,
+}
+
+impl FVE_Metadata_Block {
+    fn read(offset: u64, file: &mut File) -> Self {
+        
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum EntryType {
     None,
@@ -38,20 +97,6 @@ enum EntryType {
     Description,
     FVEKBackup,
     VolumeHeaderBlock,
-}
-
-fn get_entry_type(entry_type: u16) -> EntryType {
-    match entry_type {
-        0x0000 => EntryType::None,
-        0x0002 => EntryType::Vmk,
-        0x0003 => EntryType::Fvek,
-        0x0004 => EntryType::Validation,
-        0x0006 => EntryType::StartupKey,
-        0x0007 => EntryType::Description,
-        0x000b => EntryType::FVEKBackup,
-        0x000f => EntryType::VolumeHeaderBlock,
-        _ => EntryType::NotDocumented,
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -70,6 +115,45 @@ enum DatumType {
     Error,
     NotDocumented,
     OffsetAndSize,
+}
+
+#[derive(Debug, PartialEq)]
+enum ProtectorType {
+    ClearKey,
+    Tpm,
+    StartupKey,
+    TPMAndPin,
+    RecoveryPassword,
+    Password,
+    NotDocumented,
+}
+
+#[derive(Debug, PartialEq)]
+enum EncryptionMethod {
+    NotEncrypted,
+    StretchKey,
+    AesCcm256,
+    AesCbc128Diffuser,
+    AesCbc256Diffuser,
+    AesCbc128,
+    AesCbc256,
+    AesXts128,
+    AesXts256,
+    NotDocumented,
+}
+
+fn get_entry_type(entry_type: u16) -> EntryType {
+    match entry_type {
+        0x0000 => EntryType::None,
+        0x0002 => EntryType::Vmk,
+        0x0003 => EntryType::Fvek,
+        0x0004 => EntryType::Validation,
+        0x0006 => EntryType::StartupKey,
+        0x0007 => EntryType::Description,
+        0x000b => EntryType::FVEKBackup,
+        0x000f => EntryType::VolumeHeaderBlock,
+        _ => EntryType::NotDocumented,
+    }
 }
 
 fn get_datum_type(datum_type: u16) -> DatumType {
@@ -91,17 +175,6 @@ fn get_datum_type(datum_type: u16) -> DatumType {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum ProtectorType {
-    ClearKey,
-    Tpm,
-    StartupKey,
-    TPMAndPin,
-    RecoveryPassword,
-    Password,
-    NotDocumented,
-}
-
 fn get_protector_type(protector_type: u16) -> ProtectorType {
     match protector_type {
         0x0000 => ProtectorType::ClearKey,
@@ -111,6 +184,27 @@ fn get_protector_type(protector_type: u16) -> ProtectorType {
         0x0800 => ProtectorType::RecoveryPassword,
         0x2000 => ProtectorType::Password,
         _ => ProtectorType::NotDocumented,
+    }
+}
+
+fn get_encryption_method(encryption_method: u16) -> EncryptionMethod {
+    match encryption_method {
+        0x0000 => EncryptionMethod::NotEncrypted,
+        0x1000 => EncryptionMethod::StretchKey,
+        0x1001 => EncryptionMethod::StretchKey,
+        0x2000 => EncryptionMethod::AesCcm256,
+        0x2001 => EncryptionMethod::AesCcm256,
+        0x2002 => EncryptionMethod::AesCcm256,
+        0x2003 => EncryptionMethod::AesCcm256,
+        0x2004 => EncryptionMethod::AesCcm256,
+        0x2005 => EncryptionMethod::AesCcm256,
+        0x8000 => EncryptionMethod::AesCbc128Diffuser,
+        0x8001 => EncryptionMethod::AesCbc256Diffuser,
+        0x8002 => EncryptionMethod::AesCbc128,
+        0x8003 => EncryptionMethod::AesCbc256,
+        0x8004 => EncryptionMethod::AesXts128,
+        0x8005 => EncryptionMethod::AesXts256,
+        _ => EncryptionMethod::NotDocumented,
     }
 }
 
@@ -141,20 +235,9 @@ struct Cli {
 // AES-256-CCM init
 pub type Aes256Ccm = Ccm<Aes256, U16, U12>;
 
-fn unix_to_filetime(unix_time: u64) -> [u8; 8] {
-    // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
-    const EPOCH_DIFF: u64 = 11_644_473_600;
-    const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
-
-    let filetime_intervals: u64 = (unix_time + EPOCH_DIFF) * HUNDRED_NS_PER_SEC;
-
-    // Convert into little-endian byte array
-    filetime_intervals.to_le_bytes()
-}
-
-fn find_fve_metadata_blocks(disk: String, mut file: File) -> [u64; 3] {
+fn find_fve_metadata_blocks(disk: String, file: &mut File) -> [u64; 3] {
     let mut offsets_fve_metdata_blocks = [0u64; 3];
-    let mut found_offsets: Vec<[u64;3]> = Vec::new();
+    let mut found_offsets: Vec<[u64; 3]> = Vec::new();
     let gpt_disk = GptConfig::new().writable(false).open(disk).unwrap();
     let partitions = gpt_disk.partitions();
     let mut vbr = [0u8; 512];
@@ -163,18 +246,15 @@ fn find_fve_metadata_blocks(disk: String, mut file: File) -> [u64; 3] {
         eprintln!("[!] No partitions found.");
         exit(1);
     } else {
-        println!(
-            "[i] Found {} GPT partitions.",
-            partitions.len()
-        );
+        println!("[i] Found {} GPT partitions.", partitions.len());
     }
 
     for (index, part) in partitions.values().enumerate() {
         let start_byte_offset = match part.bytes_start(LB_SIZE) {
             Ok(offset) => {
-                println!("[i] Got a start offset at 0x{:x}",offset);
+                println!("[i] Got a start offset at 0x{:x}", offset);
                 offset
-            },
+            }
             Err(e) => {
                 eprintln!("[!] Failed to get start offset: {}", e);
                 continue;
@@ -202,7 +282,7 @@ fn find_fve_metadata_blocks(disk: String, mut file: File) -> [u64; 3] {
             found_offsets.push([
                 start_byte_offset + u64::from_le_bytes(*vbr[176..184].as_array().unwrap()),
                 start_byte_offset + u64::from_le_bytes(*vbr[184..192].as_array().unwrap()),
-                start_byte_offset + u64::from_le_bytes(*vbr[192..200].as_array().unwrap())
+                start_byte_offset + u64::from_le_bytes(*vbr[192..200].as_array().unwrap()),
             ]);
         }
     }
@@ -210,31 +290,42 @@ fn find_fve_metadata_blocks(disk: String, mut file: File) -> [u64; 3] {
         0 => {
             eprintln!("[!] No BitLocker encrypted partition found.");
             exit(1);
-        },
+        }
         1 => offsets_fve_metdata_blocks = found_offsets[0],
         _ => {
-            print!("[i] Found {} BitLocker encrypted partitions. Provide the index of the partition you want to analyse (from 1 to {}).\n>:",found_offsets.len(),found_offsets.len());
+            print!(
+                "[i] Found {} BitLocker encrypted partitions. Provide the index of the partition you want to analyse (from 1 to {}).\n>:",
+                found_offsets.len(),
+                found_offsets.len()
+            );
             let _ = stdout().flush();
-            let mut input:String =  String::new();
+            let mut input: String = String::new();
             let _ = stdin().read_line(&mut input);
             match input.parse::<usize>() {
                 Ok(num) => {
                     if num > 0 && num < found_offsets.len() {
                         offsets_fve_metdata_blocks = found_offsets[num - 1]
                     }
-                },
+                }
                 Err(e) => {
                     eprintln!("[!] Invalid input: {}", e);
                     exit(1);
-                },
+                }
             }
         }
     }
     offsets_fve_metdata_blocks
 }
 
-fn parse_fve_metadata_blocks() {
-
+fn parse_fve_metadata_blocks(
+    offsets_fve_metdata_blocks: [u64; 3],
+    file: &mut File,
+) -> Vec<FVE_Metadata_Block> {
+    let mut fve_metadata_blocks = Vec::new();
+    for offset in offsets_fve_metdata_blocks {
+        fve_metadata_blocks.push(FVE_Metadata_Block::read(offset, file));
+    }
+    fve_metadata_blocks
 }
 
 fn main() {
@@ -243,17 +334,20 @@ fn main() {
 
     match disk {
         Some(disk) => {
-            let mut file = OpenOptions::new().read(true).write(true).open(disk.clone());
-            if file.is_ok() {
-                let offsets_fve_metdata_blocks: [u64; 3] = find_fve_metadata_blocks(disk, file.unwrap());
-                println!("{:x?}",offsets_fve_metdata_blocks);
-                let fve_metadata_blocks = parse_fve_metadata_blocks();
-            }
-            else {
-                eprintln!("[!] The path to the disk you provided is invalid.");
-                exit(1);
-            }
-        },
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(disk.clone())
+                .unwrap_or_else(|_| {
+                    eprintln!("[!] The path to the disk you provided is invalid.");
+                    exit(1);
+                });
+            let offsets_fve_metdata_blocks: [u64; 3] =
+                find_fve_metadata_blocks(disk, &mut file);
+            println!("{:x?}", offsets_fve_metdata_blocks);
+            let fve_metadata_blocks =
+                parse_fve_metadata_blocks(offsets_fve_metdata_blocks, &mut file);
+        }
         None => {
             eprintln!("[!] You must provide a path to a disk to analyse.");
             exit(1);

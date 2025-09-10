@@ -13,7 +13,7 @@ use gpt::{GptConfig, disk::LogicalBlockSize};
 use itertools::Itertools;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write, stdin, stdout};
 use std::path::Path;
 use std::process::exit;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -152,12 +152,89 @@ fn unix_to_filetime(unix_time: u64) -> [u8; 8] {
     filetime_intervals.to_le_bytes()
 }
 
-fn find_fve_metadata_block(disk: String, file: File) -> [u64; 3] {
-    let mut offsets_metdata_blocks = [0u64; 3];
+fn find_fve_metadata_blocks(disk: String, mut file: File) -> [u64; 3] {
+    let mut offsets_fve_metdata_blocks = [0u64; 3];
+    let mut found_offsets: Vec<[u64;3]> = Vec::new();
     let gpt_disk = GptConfig::new().writable(false).open(disk).unwrap();
     let partitions = gpt_disk.partitions();
+    let mut vbr = [0u8; 512];
 
-    offsets_metdata_blocks
+    if partitions.is_empty() {
+        eprintln!("[!] No partitions found.");
+        exit(1);
+    } else {
+        println!(
+            "[i] Found {} GPT partitions.",
+            partitions.len()
+        );
+    }
+
+    for (index, part) in partitions.values().enumerate() {
+        let start_byte_offset = match part.bytes_start(LB_SIZE) {
+            Ok(offset) => {
+                println!("[i] Got a start offset at 0x{:x}",offset);
+                offset
+            },
+            Err(e) => {
+                eprintln!("[!] Failed to get start offset: {}", e);
+                continue;
+            }
+        };
+
+        file.seek(SeekFrom::Start(start_byte_offset)).unwrap();
+        file.read_exact(&mut vbr).unwrap_or_default();
+
+        let signature = &vbr[0..11];
+
+        if vec![SEVEN_SIGNATURE, VISTA_SIGNATURE, TOGO_SIGNATURE].contains(&signature) {
+            println!(
+                "[i] The partition {} appears to be encrypted using BitLocker. Volume headers begins at 0x{start_byte_offset:x}.",
+                index + 1
+            );
+
+            let bitlocker_identifier = Uuid::from_bytes_le(*vbr[160..176].as_array().unwrap());
+
+            println!(
+                "[i] BitLocker identifier :\t{{{}}} ",
+                bitlocker_identifier.to_string().to_uppercase()
+            );
+
+            found_offsets.push([
+                start_byte_offset + u64::from_le_bytes(*vbr[176..184].as_array().unwrap()),
+                start_byte_offset + u64::from_le_bytes(*vbr[184..192].as_array().unwrap()),
+                start_byte_offset + u64::from_le_bytes(*vbr[192..200].as_array().unwrap())
+            ]);
+        }
+    }
+    match found_offsets.len() {
+        0 => {
+            eprintln!("[!] No BitLocker encrypted partition found.");
+            exit(1);
+        },
+        1 => offsets_fve_metdata_blocks = found_offsets[0],
+        _ => {
+            print!("[i] Found {} BitLocker encrypted partitions. Provide the index of the partition you want to analyse (from 1 to {}).\n>:",found_offsets.len(),found_offsets.len());
+            let _ = stdout().flush();
+            let mut input:String =  String::new();
+            let _ = stdin().read_line(&mut input);
+            match input.parse::<usize>() {
+                Ok(num) => {
+                    if num > 0 && num < found_offsets.len() {
+                        offsets_fve_metdata_blocks = found_offsets[num - 1]
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[!] Invalid input: {}", e);
+                    exit(1);
+                },
+            }
+        }
+    }
+    offsets_fve_metdata_blocks
+}
+
+fn parse_fve_metadata_blocks() {
+
 }
 
 fn main() {
@@ -168,7 +245,9 @@ fn main() {
         Some(disk) => {
             let mut file = OpenOptions::new().read(true).write(true).open(disk.clone());
             if file.is_ok() {
-                let offsets_metdata_blocks: [u64; 3] = find_fve_metadata_block(disk, file.unwrap());
+                let offsets_fve_metdata_blocks: [u64; 3] = find_fve_metadata_blocks(disk, file.unwrap());
+                println!("{:x?}",offsets_fve_metdata_blocks);
+                let fve_metadata_blocks = parse_fve_metadata_blocks();
             }
             else {
                 eprintln!("[!] The path to the disk you provided is invalid.");

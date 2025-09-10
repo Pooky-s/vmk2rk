@@ -26,31 +26,52 @@ const VISTA_SIGNATURE: &[u8] = b"\xeb\x52\x90-FVE-FS-";
 const SEVEN_SIGNATURE: &[u8] = b"\xeb\x58\x90-FVE-FS-";
 const TOGO_SIGNATURE: &[u8] = b"\xeb\x58\x90MSWIN4.1";
 const LB_SIZE: LogicalBlockSize = LogicalBlockSize::Lb512;
+// Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
+const EPOCH_DIFF: u64 = 11_644_473_600;
+const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
 
-struct FILETIME {
+#[derive(Debug)]
+struct FILETIME { 
     array: [u8; 8],
+    timestamp: u64,
 }
 
 impl FILETIME {
     fn from_unix(unix_time: u64) -> Self {
-        // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
-        const EPOCH_DIFF: u64 = 11_644_473_600;
-        const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
-
         let filetime_intervals: u64 = (unix_time + EPOCH_DIFF) * HUNDRED_NS_PER_SEC;
-
-        // Convert into little-endian byte array
         let array = filetime_intervals.to_le_bytes();
-        FILETIME { array }
+        let timestamp = unix_time;
+
+        FILETIME {
+            array,
+            timestamp,
+        }
+    }
+
+    fn from_filetime(filetime_bytes: [u8; 8]) -> Self {
+        let filetime_val = u64::from_le_bytes(filetime_bytes);
+        let total_secs = filetime_val / HUNDRED_NS_PER_SEC;
+        let array = filetime_bytes;
+        let timestamp = total_secs - EPOCH_DIFF;
+        
+        FILETIME {
+            array,
+            timestamp,
+        }
     }
 }
 
+#[derive(Debug)]
 enum FVEData {
-    NestedEntry(Box<FVE_Metadata_Entry>),
-    Utf8String(String),
+    // TODO : Implement structs instead
+    VolumeMasterKeyEntry(Uuid,FILETIME,ProtectorType,Vec<Box<FVE_Metadata_Entry>>),
+    AesCcmEncryptedKey([u8;8],[u8;4],[u8;16],Vec<u8>),
+    StretchKey(EncryptionMethod, [u8;16], Box<FVE_Metadata_Entry>),
+    Description(String),
     Raw(Vec<u8>),
 }
 
+#[derive(Debug)]
 struct FVE_Metadata_Entry {
     entry_size: u16,
     entry_type: EntryType,
@@ -59,7 +80,75 @@ struct FVE_Metadata_Entry {
     data: FVEData,
 }
 
-impl FVE_Metadata_Entry {}
+impl FVE_Metadata_Entry {
+    fn read(entry: Vec<u8>) -> Self {
+        let entry_size = u16::from_le_bytes(*entry[0..2].as_array().unwrap());
+        let entry_type = get_entry_type(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
+        let datum_type = get_datum_type(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
+        let version = u16::from_le_bytes(*entry[6..8].as_array().unwrap());
+
+        let data = match entry_type {
+            EntryType::Vmk => {
+                if datum_type == DatumType::Vmk {
+                    let protector_guid = Uuid::from_bytes_le(*entry[8..24].as_array().unwrap());
+                    let filetime = FILETIME::from_filetime(*entry[24..32].as_array().unwrap());
+                    let protector_type = get_protector_type(u16::from_le_bytes(*entry[34..36].as_array().unwrap()));
+                    let mut sub_entries_raw = entry[36..].to_vec();
+                    let mut sub_entries = Vec::new();
+                    while sub_entries_raw.len() > 0 {
+                        let size = u16::from_le_bytes(*sub_entries_raw[0..2].as_array().unwrap());
+                        let sub_entry = FVE_Metadata_Entry::read(sub_entries_raw[0..size as usize].to_vec());
+                        sub_entries.push(Box::new(sub_entry));
+                        sub_entries_raw = sub_entries_raw[size as usize..].to_vec();
+                    }
+
+                    FVEData::VolumeMasterKeyEntry(protector_guid, filetime, protector_type,sub_entries)
+                } else {
+                    FVEData::Raw(entry[8..].to_vec())
+                }
+            },
+            EntryType::None => {
+                if datum_type == DatumType::AESCCMEncryptedKey {
+                    let nonce_date= *entry[8..16].as_array().unwrap();
+                    let nonce_counter = *entry[16..20].as_array().unwrap();
+                    let mac = *entry[20..36].as_array().unwrap();
+                    let payload = entry[36..].to_vec();
+
+                    FVEData::AesCcmEncryptedKey(nonce_date,nonce_counter,mac,payload)
+                } else if datum_type == DatumType::StretchKey {
+                    let encryption_method = get_encryption_method(u32::from_le_bytes(*entry[8..12].as_array().unwrap()));
+                    let salt = *entry[12..28].as_array().unwrap();
+                    let sub_entry = FVE_Metadata_Entry::read(entry[28..].to_vec());
+                    FVEData::StretchKey(encryption_method, salt, Box::new(sub_entry))
+                } else {
+                    FVEData::Raw(entry[8..].to_vec())
+                }
+            },
+            EntryType::NotDocumented => {
+                if datum_type == DatumType::AESCCMEncryptedKey {
+                    let nonce_date= *entry[8..16].as_array().unwrap();
+                    let nonce_counter = *entry[16..20].as_array().unwrap();
+                    let mac = *entry[20..36].as_array().unwrap();
+                    let payload = entry[36..].to_vec();
+
+                    FVEData::AesCcmEncryptedKey(nonce_date,nonce_counter,mac,payload)
+                } else {
+                    FVEData::Raw(entry[8..].to_vec())
+                }
+            },
+            EntryType::Description => FVEData::Description(String::from_utf16le(&entry[8..]).unwrap_or_default()),
+            _ => FVEData::Raw(entry[8..].to_vec()),
+        };
+
+        FVE_Metadata_Entry {
+            entry_size,
+            entry_type,
+            datum_type,
+            version,
+            data,
+        }
+    }
+}
 
 struct FVE_Metadata_Header {
     size: u32,
@@ -70,7 +159,25 @@ struct FVE_Metadata_Header {
     creation_time: FILETIME,
 }
 
-impl FVE_Metadata_Header {}
+impl FVE_Metadata_Header {
+    fn read(fve_metadata_header_raw: [u8;48]) -> Self {
+        let size = u32::from_le_bytes(*fve_metadata_header_raw[0..4].as_array().unwrap());
+        let version = u32::from_le_bytes(*fve_metadata_header_raw[4..8].as_array().unwrap());
+        let volume_guid = Uuid::from_bytes_le(*fve_metadata_header_raw[16..32].as_array().unwrap());
+        let next_nonce_counter = u32::from_le_bytes(*fve_metadata_header_raw[32..36].as_array().unwrap());
+        let encryption_method = get_encryption_method(u32::from_le_bytes(*fve_metadata_header_raw[36..40].as_array().unwrap()));
+        let creation_time = FILETIME::from_filetime(*fve_metadata_header_raw[40..48].as_array().unwrap());
+
+        FVE_Metadata_Header {
+            size,
+            version,
+            volume_guid,
+            next_nonce_counter,
+            encryption_method,
+            creation_time
+        } 
+    }
+}
 
 struct FVE_Metadata_Block {
     signature: String,
@@ -82,7 +189,47 @@ struct FVE_Metadata_Block {
 
 impl FVE_Metadata_Block {
     fn read(offset: u64, file: &mut File) -> Self {
+        // Retrieve block size wihtout the validation part
+        let mut validation_block_offset_raw = [0u8;2];
+
+        file.seek(SeekFrom::Start(offset+8)).unwrap();
+        file.read_exact(&mut validation_block_offset_raw).unwrap_or_default();
+
+        let validation_block_offset = u16::from_le_bytes(validation_block_offset_raw)<<4;
+
+        let mut fve_metadata_block_raw = vec![0u8; validation_block_offset as usize];
+
+        // Retrieve whole block
+        file.seek(SeekFrom::Start(offset)).unwrap();
+        file.read_exact(&mut fve_metadata_block_raw).unwrap_or_default();
+
+        // Set signature and version
+        let signature = String::from_utf8(fve_metadata_block_raw[0..8].to_vec()).unwrap_or_default();
+        let version = u16::from_le_bytes(*fve_metadata_block_raw[10..12].as_array().unwrap());
+
+        // Initialize FVE Metdata Block Header 
+        let fve_metadata_header = FVE_Metadata_Header::read(*fve_metadata_block_raw[64..112].as_array().unwrap());
         
+        // Initialize FVE Metdata Entries
+        let mut fve_metadata_entries_raw = fve_metadata_block_raw[112..].to_vec();
+        let mut fve_metadata_entries: Vec<FVE_Metadata_Entry> = Vec::new();
+
+        //println!("{:0>2x?}",fve_metadata_entries_raw);
+        while fve_metadata_entries_raw.len() > 0 {
+            let size = u16::from_le_bytes(*fve_metadata_entries_raw[0..2].as_array().unwrap());
+            let entry = FVE_Metadata_Entry::read(fve_metadata_entries_raw[0..size as usize].to_vec());
+            //println!("[i] {:?} {:?}\n\t{:0>2x?}",entry.entry_type, entry.datum_type, entry.data);
+            fve_metadata_entries.push(entry);
+            fve_metadata_entries_raw = fve_metadata_entries_raw[size as usize..].to_vec();
+        }
+
+        FVE_Metadata_Block { 
+            signature,
+            validation_block_offset,
+            version,
+            fve_metadata_header,
+            fve_metadata_entries
+        }
     }
 }
 
@@ -187,7 +334,7 @@ fn get_protector_type(protector_type: u16) -> ProtectorType {
     }
 }
 
-fn get_encryption_method(encryption_method: u16) -> EncryptionMethod {
+fn get_encryption_method(encryption_method: u32) -> EncryptionMethod {
     match encryption_method {
         0x0000 => EncryptionMethod::NotEncrypted,
         0x1000 => EncryptionMethod::StretchKey,

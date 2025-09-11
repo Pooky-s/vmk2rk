@@ -68,6 +68,7 @@ trait Describe {
 enum FVEData {
     VolumeMasterKeyEntry(Volume_Master_Key_Entry),
     StretchKey(Stretch_Key),
+    UseKey(Use_Key),
     AesCcmEncryptedKey(Aes_Ccm_Encrypted_Key),
     Description(Description),
     Raw(Raw),
@@ -88,6 +89,13 @@ impl FVEData {
             None
         }
     }
+    fn try_as_use_key(&self) -> Option<&Use_Key> {
+        if let FVEData::UseKey(data) = self {
+            Some(&data)
+        } else {
+            None
+        }
+    }
 }
 
 impl Describe for FVEData {
@@ -95,6 +103,7 @@ impl Describe for FVEData {
         match self {
             FVEData::VolumeMasterKeyEntry(vmk_entry) => vmk_entry.describe(),
             FVEData::StretchKey(stretch_key) => stretch_key.describe(),
+            FVEData::UseKey(use_key) => use_key.describe(),
             FVEData::AesCcmEncryptedKey(aes_ccm_encrypted_key) => aes_ccm_encrypted_key.describe(),
             FVEData::Description(description) => description.describe(),
             FVEData::Raw(raw) => raw.describe(),
@@ -217,6 +226,42 @@ impl Describe for Stretch_Key {
 }
 
 #[derive(Clone)]
+struct Use_Key {
+    entry_size: u16,
+    entry_type: EntryType,
+    datum_type: DatumType,
+    version: u16,
+    encryption_type: u32,
+    sub_entry: Box<FVE_Metadata_Entry>,
+}
+
+impl Use_Key {
+    fn read(entry: Vec<u8>) -> Self {
+        let entry_size = u16::from_le_bytes(*entry[0..2].as_array().unwrap());
+        let entry_type = get_entry_type(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
+        let datum_type = get_datum_type(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
+        let version = u16::from_le_bytes(*entry[6..8].as_array().unwrap());
+        let encryption_type = u32::from_le_bytes(*entry[8..12].as_array().unwrap());
+        let sub_entry = Box::new(FVE_Metadata_Entry::read(entry[12..].to_vec()));
+
+        Use_Key {
+            entry_size,
+            entry_type,
+            datum_type,
+            version,
+            encryption_type,
+            sub_entry,
+        }
+    }
+}
+
+impl Describe for Use_Key {
+    fn describe(&self) -> String {
+        format!("[i] Entry Size : 0x{:0>4x}\n[i] Entry Type : {:?}\n[i] Datum Type : {:?}\n[i] Version : {}\n[i] Encryption type : 0x{:0>8x?}\n[i] Data :\n{}",self.entry_size, self.entry_type, self.datum_type, self.version, self.encryption_type, self.sub_entry.describe())
+    }
+}
+
+#[derive(Clone)]
 struct Description {
     description: String
 }
@@ -274,6 +319,7 @@ impl FVE_Metadata_Entry {
             DatumType::Vmk => FVEData::VolumeMasterKeyEntry(Volume_Master_Key_Entry::read(entry)),
             DatumType::AESCCMEncryptedKey => FVEData::AesCcmEncryptedKey(Aes_Ccm_Encrypted_Key::read(entry)),
             DatumType::StretchKey => FVEData::StretchKey(Stretch_Key::read(entry)),
+            DatumType::UseKey => FVEData::UseKey(Use_Key::read(entry)),
             DatumType::UnicodeString => FVEData::Description(Description::read(String::from_utf16le(&entry[8..]).unwrap_or_default())),
             _ => FVEData::Raw(Raw::read(entry)),
         };
@@ -365,7 +411,7 @@ impl FVE_Metadata_Block {
             let size = u16::from_le_bytes(*fve_metadata_entries_raw[0..2].as_array().unwrap());
             if size != 0 {
                 let entry = FVE_Metadata_Entry::read(fve_metadata_entries_raw[0..size as usize].to_vec());
-                //println!("\n[i] Found an entry.\n========================================================\n{}",entry.describe());
+                println!("\n[i] Found an entry.\n========================================================\n{}",entry.describe());
                 fve_metadata_entries.push(entry);
                 fve_metadata_entries_raw = fve_metadata_entries_raw[size as usize..].to_vec();
             } else {
@@ -549,6 +595,10 @@ struct Cli {
     #[arg(short, long)]
     recovery_password: bool,
 
+    /// Retrieves the Startup Key using the provided VMK.
+    #[arg(short, long)]
+    startup_key: bool,
+
     /// Disk from which Key Protectors are retrieved.
     #[arg(required = true, short, long, value_name = "DISKPATH")]
     disk: Option<String>,
@@ -672,7 +722,7 @@ fn aes_ccm_entry_decrypt(key: Vec<u8>, entry: &Aes_Ccm_Encrypted_Key) -> Result<
 fn get_recovery_password(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block>) -> Option<RecoveryPassword> {
     let mut recovery_password: Option<RecoveryPassword> = Option::None;
     for entry in fve_metadata_blocks[0].clone().fve_metadata_entries[0..].to_vec() {
-        let RecoveryPassword = match entry.data {
+        match entry.data {
             FVEData::VolumeMasterKeyEntry(data) => {
                 if data.protector_type == ProtectorType::RecoveryPassword {
                     let recovery_password_entry = data.sub_entries[0].data.try_as_stretch_key().unwrap().sub_entries[0].data.try_as_aes_ccm_data().unwrap();
@@ -690,6 +740,22 @@ fn get_recovery_password(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata
         };
     }
     recovery_password
+}
+
+fn get_startup_key(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block>) {
+    for entry in fve_metadata_blocks[0].clone().fve_metadata_entries[0..].to_vec() {
+        match entry.data {
+            FVEData::VolumeMasterKeyEntry(data) => {
+                if data.protector_type == ProtectorType::StartupKey {
+                    let startup_key_entry = data.sub_entries[1].data.try_as_use_key().unwrap().sub_entry.data.try_as_aes_ccm_data().unwrap();
+                    let vmk_bytes = decode(&vmk).unwrap_or_default();
+                    let decrypted = aes_ccm_entry_decrypt(vmk_bytes, startup_key_entry);
+                    println!("{:0>2x?}",decrypted);
+                }
+            },
+            _ => {continue}
+        };
+    }
 }
 
 fn main() {
@@ -716,6 +782,9 @@ fn main() {
                     Some(recovery_password) => println!("[i] Recovery password retrieved successfully:\n\t{}",recovery_password.pretty_print_key),
                     None => eprintln!("[!] No recovery password retrieved."),
                 };
+            } 
+            if cli.startup_key {
+                let startup_key = get_startup_key(cli.vmk.clone(), &mut fve_metadata_blocks);
             }
         }
         None => {

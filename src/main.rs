@@ -96,6 +96,13 @@ impl FVEData {
             None
         }
     }
+    fn try_as_vmk_entry(&self) -> Option<&Volume_Master_Key_Entry> {
+        if let FVEData::VolumeMasterKeyEntry(data) = self {
+            Some(&data)
+        } else {
+            None
+        }
+    }
 }
 
 impl Describe for FVEData {
@@ -124,7 +131,7 @@ impl Volume_Master_Key_Entry {
         //println!("{:0>2x?}",entry[0..2].to_vec());
         let protector_guid = Uuid::from_bytes_le(*entry[8..24].as_array().unwrap());
         let creation_time = FILETIME::from_filetime(*entry[24..32].as_array().unwrap());
-        let protector_type = get_protector_type(u16::from_le_bytes(*entry[34..36].as_array().unwrap()));
+        let protector_type = ProtectorType::set(u16::from_le_bytes(*entry[34..36].as_array().unwrap()));
         let mut sub_entries_raw = entry[36..].to_vec();
         let mut sub_entries = Vec::new();
 
@@ -151,7 +158,7 @@ impl Describe for Volume_Master_Key_Entry {
         for sub_entry in self.sub_entries.clone() {
             sub_entries_string += &sub_entry.describe()
         };
-        format!("[i] Protector GUID : {{{}}}\n[i] Creation time : {}\n[i] Protector type : {:?}\n[i] Sub-entries:\n{}", self.protector_guid.to_string().to_uppercase(), self.creation_time.timestamp, self.protector_type, sub_entries_string)
+        format!("[i] Protector GUID : {{{}}}\n[i] Creation time : {}\n[i] Protector type : {:?}\n[i] Sub-entries:\n{}", self.protector_guid.to_string(), self.creation_time.timestamp, self.protector_type, sub_entries_string)
     }
 }
 
@@ -194,7 +201,7 @@ struct Stretch_Key {
 
 impl Stretch_Key {
     fn read(entry: Vec<u8>) -> Self {
-        let encryption_method = get_encryption_method(u32::from_le_bytes(*entry[8..12].as_array().unwrap()));
+        let encryption_method = EncryptionMethod::set(u32::from_le_bytes(*entry[8..12].as_array().unwrap()));
         let salt = *entry[12..28].as_array().unwrap();
         let mut sub_entries_raw = entry[28..].to_vec();
         let mut sub_entries= Vec::new();
@@ -238,8 +245,8 @@ struct Use_Key {
 impl Use_Key {
     fn read(entry: Vec<u8>) -> Self {
         let entry_size = u16::from_le_bytes(*entry[0..2].as_array().unwrap());
-        let entry_type = get_entry_type(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
-        let datum_type = get_datum_type(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
+        let entry_type = EntryType::set(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
+        let datum_type = DatumType::set(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
         let version = u16::from_le_bytes(*entry[6..8].as_array().unwrap());
         let encryption_type = u32::from_le_bytes(*entry[8..12].as_array().unwrap());
         let sub_entry = Box::new(FVE_Metadata_Entry::read(entry[12..].to_vec()));
@@ -311,16 +318,16 @@ struct FVE_Metadata_Entry {
 impl FVE_Metadata_Entry {
     fn read(entry: Vec<u8>) -> Self {
         let entry_size = u16::from_le_bytes(*entry[0..2].as_array().unwrap());
-        let entry_type = get_entry_type(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
-        let datum_type = get_datum_type(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
+        let entry_type = EntryType::set(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
+        let datum_type = DatumType::set(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
         let version = u16::from_le_bytes(*entry[6..8].as_array().unwrap());
 
         let data: FVEData = match datum_type {
-            DatumType::Vmk => FVEData::VolumeMasterKeyEntry(Volume_Master_Key_Entry::read(entry)),
-            DatumType::AESCCMEncryptedKey => FVEData::AesCcmEncryptedKey(Aes_Ccm_Encrypted_Key::read(entry)),
-            DatumType::StretchKey => FVEData::StretchKey(Stretch_Key::read(entry)),
-            DatumType::UseKey => FVEData::UseKey(Use_Key::read(entry)),
-            DatumType::UnicodeString => FVEData::Description(Description::read(String::from_utf16le(&entry[8..]).unwrap_or_default())),
+            DatumType::Vmk(_) => FVEData::VolumeMasterKeyEntry(Volume_Master_Key_Entry::read(entry)),
+            DatumType::AESCCMEncryptedKey(_) => FVEData::AesCcmEncryptedKey(Aes_Ccm_Encrypted_Key::read(entry)),
+            DatumType::StretchKey(_) => FVEData::StretchKey(Stretch_Key::read(entry)),
+            DatumType::UseKey(_) => FVEData::UseKey(Use_Key::read(entry)),
+            DatumType::UnicodeString(_) => FVEData::Description(Description::read(String::from_utf16le(&entry[8..]).unwrap_or_default())),
             _ => FVEData::Raw(Raw::read(entry)),
         };
 
@@ -356,7 +363,7 @@ impl FVE_Metadata_Header {
         let version = u32::from_le_bytes(*fve_metadata_header_raw[4..8].as_array().unwrap());
         let volume_guid = Uuid::from_bytes_le(*fve_metadata_header_raw[16..32].as_array().unwrap());
         let next_nonce_counter = u32::from_le_bytes(*fve_metadata_header_raw[32..36].as_array().unwrap());
-        let encryption_method = get_encryption_method(u32::from_le_bytes(*fve_metadata_header_raw[36..40].as_array().unwrap()));
+        let encryption_method = EncryptionMethod::set(u32::from_le_bytes(*fve_metadata_header_raw[36..40].as_array().unwrap()));
         let creation_time = FILETIME::from_filetime(*fve_metadata_header_raw[40..48].as_array().unwrap());
 
         FVE_Metadata_Header {
@@ -430,125 +437,193 @@ impl FVE_Metadata_Block {
     }
 }
 
+
 #[derive(Debug, PartialEq, Clone)]
 enum EntryType {
-    None,
-    NotDocumented,
-    Vmk,
-    Fvek,
-    Validation,
-    StartupKey,
-    Description,
-    FVEKBackup,
-    VolumeHeaderBlock,
+    None(u16),
+    NotDocumented(u16),
+    Vmk(u16),
+    Fvek(u16),
+    Validation(u16),
+    StartupKey(u16),
+    Description(u16),
+    FVEKBackup(u16),
+    VolumeHeaderBlock(u16),
+}
+
+impl EntryType {
+    fn set(entry_type: u16) -> Self {
+        match entry_type {
+            0x0000 => EntryType::None(entry_type),
+            0x0002 => EntryType::Vmk(entry_type),
+            0x0003 => EntryType::Fvek(entry_type),
+            0x0004 => EntryType::Validation(entry_type),
+            0x0006 => EntryType::StartupKey(entry_type),
+            0x0007 => EntryType::Description(entry_type),
+            0x000b => EntryType::FVEKBackup(entry_type),
+            0x000f => EntryType::VolumeHeaderBlock(entry_type),
+            _ => EntryType::NotDocumented(entry_type),
+        }
+    }
+    fn get(&self) -> u16 {
+        match self {
+            EntryType::None(entry_type)
+            | EntryType::Vmk(entry_type)
+            | EntryType::Fvek(entry_type)
+            | EntryType::Validation(entry_type)
+            | EntryType::StartupKey(entry_type)
+            | EntryType::Description(entry_type)
+            | EntryType::FVEKBackup(entry_type)
+            | EntryType::VolumeHeaderBlock(entry_type)
+            | EntryType::NotDocumented(entry_type) => *entry_type,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 enum DatumType {
-    Erased,
-    Key,
-    UnicodeString,
-    StretchKey,
-    UseKey,
-    AESCCMEncryptedKey,
-    TPMEncodedKey,
-    Validation,
-    Vmk,
-    ExternalKey,
-    Update,
-    Error,
-    NotDocumented,
-    OffsetAndSize,
+    Erased(u16),
+    Key(u16),
+    UnicodeString(u16),
+    StretchKey(u16),
+    UseKey(u16),
+    AESCCMEncryptedKey(u16),
+    TPMEncodedKey(u16),
+    Validation(u16),
+    Vmk(u16),
+    ExternalKey(u16),
+    Update(u16),
+    Error(u16),
+    NotDocumented(u16),
+    OffsetAndSize(u16),
+}
+
+impl DatumType {
+    fn set(datum_type: u16) -> Self {
+        match datum_type {
+            0x0000 => DatumType::Erased(datum_type),
+            0x0001 => DatumType::Key(datum_type),
+            0x0002 => DatumType::UnicodeString(datum_type),
+            0x0003 => DatumType::StretchKey(datum_type),
+            0x0004 => DatumType::UseKey(datum_type),
+            0x0005 => DatumType::AESCCMEncryptedKey(datum_type),
+            0x0006 => DatumType::TPMEncodedKey(datum_type),
+            0x0007 => DatumType::Validation(datum_type),
+            0x0008 => DatumType::Vmk(datum_type),
+            0x0009 => DatumType::ExternalKey(datum_type),
+            0x000a => DatumType::Update(datum_type),
+            0x000b => DatumType::Error(datum_type),
+            0x000f => DatumType::OffsetAndSize(datum_type),
+            _ => DatumType::NotDocumented(datum_type),
+        }
+    }
+    fn get(&self) -> u16 {
+        match self {
+            DatumType::Erased(datum_type)
+            | DatumType::Key(datum_type)
+            | DatumType::UnicodeString(datum_type)
+            | DatumType::StretchKey(datum_type)
+            | DatumType::UseKey(datum_type)
+            | DatumType::AESCCMEncryptedKey(datum_type)
+            | DatumType::TPMEncodedKey(datum_type)
+            | DatumType::Validation(datum_type)
+            | DatumType::Vmk(datum_type)
+            | DatumType::ExternalKey(datum_type)
+            | DatumType::Update(datum_type)
+            | DatumType::Error(datum_type)
+            | DatumType::OffsetAndSize(datum_type)
+            | DatumType::NotDocumented(datum_type) => *datum_type
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 enum ProtectorType {
-    ClearKey,
-    Tpm,
-    StartupKey,
-    TPMAndPin,
-    RecoveryPassword,
-    Password,
-    NotDocumented,
+    ClearKey(u16),
+    Tpm(u16),
+    StartupKey(u16),
+    TPMAndPin(u16),
+    RecoveryPassword(u16),
+    Password(u16),
+    ExternalKey(u16),
+    NotDocumented(u16),
+}
+
+impl ProtectorType {
+    fn set(protector_type: u16) -> Self {
+        match protector_type {
+            0x0000 => ProtectorType::ClearKey(protector_type),
+            0x0100 => ProtectorType::Tpm(protector_type),
+            0x0200 => ProtectorType::StartupKey(protector_type),
+            0x0500 => ProtectorType::TPMAndPin(protector_type),
+            0x0800 => ProtectorType::RecoveryPassword(protector_type),
+            0x2000 => ProtectorType::Password(protector_type),
+            0x2002 => ProtectorType::ExternalKey(protector_type),
+            _ => ProtectorType::NotDocumented(protector_type),
+        }
+    }
+    fn get(&self) -> u16 {
+        match self {
+            ProtectorType::ClearKey(protector_type)
+            | ProtectorType::Tpm(protector_type)
+            | ProtectorType::StartupKey(protector_type)
+            | ProtectorType::TPMAndPin(protector_type)
+            | ProtectorType::RecoveryPassword(protector_type)
+            | ProtectorType::Password(protector_type)
+            | ProtectorType::ExternalKey(protector_type)
+            | ProtectorType::NotDocumented(protector_type) => *protector_type
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 enum EncryptionMethod {
-    NotEncrypted,
-    StretchKey,
-    AesCcm256,
-    AesCbc128Diffuser,
-    AesCbc256Diffuser,
-    AesCbc128,
-    AesCbc256,
-    AesXts128,
-    AesXts256,
-    NotDocumented,
+    NotEncrypted(u32),
+    StretchKey(u32),
+    AesCcm256(u32),
+    AesCbc128Diffuser(u32),
+    AesCbc256Diffuser(u32),
+    AesCbc128(u32),
+    AesCbc256(u32),
+    AesXts128(u32),
+    AesXts256(u32),
+    NotDocumented(u32),
 }
 
-fn get_entry_type(entry_type: u16) -> EntryType {
-    match entry_type {
-        0x0000 => EntryType::None,
-        0x0002 => EntryType::Vmk,
-        0x0003 => EntryType::Fvek,
-        0x0004 => EntryType::Validation,
-        0x0006 => EntryType::StartupKey,
-        0x0007 => EntryType::Description,
-        0x000b => EntryType::FVEKBackup,
-        0x000f => EntryType::VolumeHeaderBlock,
-        _ => EntryType::NotDocumented,
+impl EncryptionMethod {
+    fn set(encryption_method: u32) -> Self {
+        match encryption_method {
+            0x0000 => EncryptionMethod::NotEncrypted(encryption_method),
+            0x1000 => EncryptionMethod::StretchKey(encryption_method),
+            0x1001 => EncryptionMethod::StretchKey(encryption_method),
+            0x2000 => EncryptionMethod::AesCcm256(encryption_method),
+            0x2001 => EncryptionMethod::AesCcm256(encryption_method),
+            0x2002 => EncryptionMethod::AesCcm256(encryption_method),
+            0x2003 => EncryptionMethod::AesCcm256(encryption_method),
+            0x2004 => EncryptionMethod::AesCcm256(encryption_method),
+            0x2005 => EncryptionMethod::AesCcm256(encryption_method),
+            0x8000 => EncryptionMethod::AesCbc128Diffuser(encryption_method),
+            0x8001 => EncryptionMethod::AesCbc256Diffuser(encryption_method),
+            0x8002 => EncryptionMethod::AesCbc128(encryption_method),
+            0x8003 => EncryptionMethod::AesCbc256(encryption_method),
+            0x8004 => EncryptionMethod::AesXts128(encryption_method),
+            0x8005 => EncryptionMethod::AesXts256(encryption_method),
+            _ => EncryptionMethod::NotDocumented(encryption_method),
+        }
     }
-}
-
-fn get_datum_type(datum_type: u16) -> DatumType {
-    match datum_type {
-        0x0000 => DatumType::Erased,
-        0x0001 => DatumType::Key,
-        0x0002 => DatumType::UnicodeString,
-        0x0003 => DatumType::StretchKey,
-        0x0004 => DatumType::UseKey,
-        0x0005 => DatumType::AESCCMEncryptedKey,
-        0x0006 => DatumType::TPMEncodedKey,
-        0x0007 => DatumType::Validation,
-        0x0008 => DatumType::Vmk,
-        0x0009 => DatumType::ExternalKey,
-        0x000a => DatumType::Update,
-        0x000b => DatumType::Error,
-        0x000f => DatumType::OffsetAndSize,
-        _ => DatumType::NotDocumented,
-    }
-}
-
-fn get_protector_type(protector_type: u16) -> ProtectorType {
-    match protector_type {
-        0x0000 => ProtectorType::ClearKey,
-        0x0100 => ProtectorType::Tpm,
-        0x0200 => ProtectorType::StartupKey,
-        0x0500 => ProtectorType::TPMAndPin,
-        0x0800 => ProtectorType::RecoveryPassword,
-        0x2000 => ProtectorType::Password,
-        _ => ProtectorType::NotDocumented,
-    }
-}
-
-fn get_encryption_method(encryption_method: u32) -> EncryptionMethod {
-    match encryption_method {
-        0x0000 => EncryptionMethod::NotEncrypted,
-        0x1000 => EncryptionMethod::StretchKey,
-        0x1001 => EncryptionMethod::StretchKey,
-        0x2000 => EncryptionMethod::AesCcm256,
-        0x2001 => EncryptionMethod::AesCcm256,
-        0x2002 => EncryptionMethod::AesCcm256,
-        0x2003 => EncryptionMethod::AesCcm256,
-        0x2004 => EncryptionMethod::AesCcm256,
-        0x2005 => EncryptionMethod::AesCcm256,
-        0x8000 => EncryptionMethod::AesCbc128Diffuser,
-        0x8001 => EncryptionMethod::AesCbc256Diffuser,
-        0x8002 => EncryptionMethod::AesCbc128,
-        0x8003 => EncryptionMethod::AesCbc256,
-        0x8004 => EncryptionMethod::AesXts128,
-        0x8005 => EncryptionMethod::AesXts256,
-        _ => EncryptionMethod::NotDocumented,
+    fn get(&self) -> u32 {
+        match self {
+            EncryptionMethod::NotEncrypted(encryption_method)
+            | EncryptionMethod::StretchKey(encryption_method)
+            | EncryptionMethod::AesCcm256(encryption_method)
+            | EncryptionMethod::AesCbc128Diffuser(encryption_method)
+            | EncryptionMethod::AesCbc256Diffuser(encryption_method)
+            | EncryptionMethod::AesCbc128(encryption_method)
+            | EncryptionMethod::AesCbc256(encryption_method)
+            | EncryptionMethod::AesXts128(encryption_method)
+            | EncryptionMethod::AesXts256(encryption_method)
+            | EncryptionMethod::NotDocumented(encryption_method) => *encryption_method
+        }
     }
 }
 
@@ -578,6 +653,154 @@ impl RecoveryPassword {
             raw_key,
         }
     }
+}
+
+struct BEKHeader {
+    bek_file_size: u32,
+    version: u32, 
+    header_size: u32, 
+    protector_guid: Uuid,
+    nonce_counter: u32, 
+    encryption_type: EncryptionMethod,
+    creation_time: FILETIME,
+}
+
+impl BEKHeader {
+    fn new(protector_guid: Uuid, creation_time: FILETIME) -> Self{
+        let bek_file_size = 0x9cu32;
+        let version = 1u32;
+        let header_size = 48u32;
+        let encryption_type = EncryptionMethod::NotEncrypted(0u32);
+        let nonce_counter = 1u32;
+
+        BEKHeader{
+            bek_file_size,
+            version,
+            header_size,
+            protector_guid,
+            nonce_counter,
+            encryption_type,
+            creation_time,
+        }
+    }
+}
+
+struct BEKContent {
+    content_size: u16, 
+    entry_type: EntryType, 
+    datum_type: DatumType, 
+    version: u16, 
+    external_key_guid: Uuid,
+    modification_time: FILETIME, 
+    string_size: u16, 
+    string_entry_type: EntryType, 
+    string_datum_type: DatumType, 
+    string_version: u16, 
+    string_content: String, 
+    key_size: u16, 
+    key_entry_type: EntryType,
+    key_datum_type: DatumType, 
+    key_version: u16, 
+    key_protector_type: ProtectorType, 
+    key: Vec<u8>,
+}
+
+impl BEKContent {
+    fn new(external_key_guid: Uuid, modification_time: FILETIME, key: Vec<u8>) -> Self {
+        let content_size = 0x6cu16;
+        let entry_type = EntryType::set(6u16);
+        let datum_type = DatumType::set(9u16);
+        let version = 1u16;
+        let string_version = version;
+        let key_version = version;
+        let string_size = 0x20u16;
+        let string_entry_type = EntryType::set(0u16);
+        let string_datum_type = DatumType::set(2u16);
+        let string_content = "ExternalKey\x00".to_string();
+        let key_size =  0x2cu16;
+        let key_entry_type = EntryType::set(0u16);
+        let key_datum_type = DatumType::set(1u16);
+        let key_protector_type = ProtectorType::set(0x2002u16);
+
+        BEKContent {
+            content_size,
+            entry_type,
+            datum_type,
+            version,
+            external_key_guid,
+            modification_time,
+            string_size,
+            string_entry_type,
+            string_datum_type,
+            string_version,
+            string_content,
+            key_size, 
+            key_entry_type,
+            key_datum_type, 
+            key_version, 
+            key_protector_type, 
+            key,
+        }
+    }
+}
+
+struct StartupKey {
+    header: BEKHeader, 
+    content: BEKContent,
+}
+
+impl StartupKey {
+    fn read(key: Vec<u8>, entry: Volume_Master_Key_Entry) -> Self {
+        let guid = entry.protector_guid;
+        let creation_time = entry.creation_time;
+        let header = BEKHeader::new(guid, creation_time.clone());
+        let content = BEKContent::new(guid, creation_time, key[12..].to_vec());
+        StartupKey { 
+            header,
+            content,
+        }
+    }
+    fn write_locally(&self) {
+        let mut bek_file: Vec<u8> = Vec::new();
+        bek_file.append(&mut self.header.bek_file_size.to_le_bytes().to_vec());
+        bek_file.append(&mut self.header.version.to_le_bytes().to_vec());
+        bek_file.append(&mut self.header.header_size.to_le_bytes().to_vec());
+        bek_file.append(&mut self.header.bek_file_size.to_le_bytes().to_vec());
+        bek_file.append(&mut self.header.protector_guid.to_bytes_le().to_vec());
+        bek_file.append(&mut self.header.nonce_counter.to_le_bytes().to_vec());
+        bek_file.append(&mut self.header.encryption_type.get().to_le_bytes().to_vec());
+        bek_file.append(&mut self.header.creation_time.array.to_vec());
+        bek_file.append(&mut self.content.content_size.to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.entry_type.get().to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.datum_type.get().to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.version.to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.external_key_guid.to_bytes_le().to_vec());
+        bek_file.append(&mut self.content.modification_time.array.to_vec());
+        bek_file.append(&mut self.content.string_size.to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.string_entry_type.get().to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.string_datum_type.get().to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.string_version.to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.string_content.encode_utf16().flat_map(|unit| unit.to_le_bytes())
+        .collect());
+        bek_file.append(&mut self.content.key_size.to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.key_entry_type.get().to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.key_datum_type.get().to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.key_version.to_le_bytes().to_vec());
+        bek_file.append(&mut (self.content.key_protector_type.get() as u32).to_le_bytes().to_vec());
+        bek_file.append(&mut self.content.key.to_vec());
+        let filename = self.header.protector_guid.to_string().to_uppercase() + ".bek";
+        let new_file = File::create(filename.clone());
+        match new_file {
+            Ok(mut file) => {
+                if file.write_all(&bek_file).is_ok() {
+                    println!("[r] Wrote the External Key File at ./{filename}.")
+                } else {
+                    eprintln!("[!] Error encountered while writing the External Key at ./{filename}")
+                };
+            }
+            Err(error) => eprintln!("[i] Error while creating the BEK file : {}", error),
+        }
+   }
 }
 
 #[derive(Parser)]
@@ -724,7 +947,7 @@ fn get_recovery_password(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata
     for entry in fve_metadata_blocks[0].clone().fve_metadata_entries[0..].to_vec() {
         match entry.data {
             FVEData::VolumeMasterKeyEntry(data) => {
-                if data.protector_type == ProtectorType::RecoveryPassword {
+                if data.protector_type == ProtectorType::RecoveryPassword(0x0800u16) {
                     let recovery_password_entry = data.sub_entries[0].data.try_as_stretch_key().unwrap().sub_entries[0].data.try_as_aes_ccm_data().unwrap();
                     let vmk_bytes = decode(&vmk).unwrap_or_default();
                     let decrypted = aes_ccm_entry_decrypt(vmk_bytes, recovery_password_entry);
@@ -742,20 +965,27 @@ fn get_recovery_password(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata
     recovery_password
 }
 
-fn get_startup_key(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block>) {
+fn get_startup_key(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block>) -> Option<StartupKey> {
+    let mut startup_key: Option<StartupKey> = Option::None;
     for entry in fve_metadata_blocks[0].clone().fve_metadata_entries[0..].to_vec() {
-        match entry.data {
+        match entry.clone().data {
             FVEData::VolumeMasterKeyEntry(data) => {
-                if data.protector_type == ProtectorType::StartupKey {
+                if data.protector_type == ProtectorType::StartupKey(0x0200) {
                     let startup_key_entry = data.sub_entries[1].data.try_as_use_key().unwrap().sub_entry.data.try_as_aes_ccm_data().unwrap();
                     let vmk_bytes = decode(&vmk).unwrap_or_default();
                     let decrypted = aes_ccm_entry_decrypt(vmk_bytes, startup_key_entry);
-                    println!("{:0>2x?}",decrypted);
+                    if decrypted.is_ok() {
+                        startup_key = Some(StartupKey::read(decrypted.unwrap(), entry.data.try_as_vmk_entry().unwrap().clone()));
+                    } else {
+                        eprintln!("[!] Failed to decrypt the recovery password found.");
+                        exit(1);
+                    }
                 }
             },
             _ => {continue}
         };
     }
+    startup_key
 }
 
 fn main() {
@@ -785,6 +1015,7 @@ fn main() {
             } 
             if cli.startup_key {
                 let startup_key = get_startup_key(cli.vmk.clone(), &mut fve_metadata_blocks);
+                startup_key.unwrap().write_locally()
             }
         }
         None => {

@@ -1010,12 +1010,18 @@ fn main() {
                 let recovery_password = get_recovery_password(cli.vmk.clone(), &mut fve_metadata_blocks);
                 match recovery_password {
                     Some(recovery_password) => println!("[i] Recovery password retrieved successfully:\n\t{}",recovery_password.pretty_print_key),
-                    None => eprintln!("[!] No recovery password retrieved."),
+                    None => eprintln!("[r] No recovery password retrieved."),
                 };
             } 
             if cli.startup_key {
                 let startup_key = get_startup_key(cli.vmk.clone(), &mut fve_metadata_blocks);
-                startup_key.unwrap().write_locally()
+                match startup_key {
+                    Some(startup_key) => {
+                        println!("[r] Startup key retrieved successfully.");
+                        startup_key.write_locally();
+                    },
+                    None => eprintln!("[!] No recovery password retrieved."),
+                };
             }
         }
         None => {

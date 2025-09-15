@@ -668,6 +668,8 @@ struct BEKHeader {
 
 impl Default for BEKHeader {
     fn default() -> Self {
+        let var = 11_644_473_601u64.to_be_bytes();
+        println!("{:0>2x?}",var);
         Self {
             bek_file_size: 0x9cu32,
             version: 1u32,
@@ -675,7 +677,7 @@ impl Default for BEKHeader {
             protector_guid: Uuid::nil(),
             nonce_counter: 1u32,
             encryption_type: EncryptionMethod::set(0u32),
-            creation_time: FILETIME::from_filetime([0u8;8]),
+            creation_time: FILETIME::from_unix(0),
         }
     }
 }
@@ -718,7 +720,7 @@ impl Default for BEKContent {
             datum_type: DatumType::set(9u16),
             version: 1u16,
             external_key_guid: Uuid::nil(),
-            modification_time: FILETIME::from_filetime([0u8;8]),
+            modification_time: FILETIME::from_unix(0),
             string_size: 0x20u16,
             string_entry_type: EntryType::set(0u16),
             string_datum_type: DatumType::set(2u16),
@@ -761,39 +763,44 @@ impl StartupKey {
             content,
         }
     }
-    fn write_locally(&self) {
+
+    fn to_bytes(&mut self) -> Vec<u8> {
         let mut bek_file: Vec<u8> = Vec::new();
-        bek_file.append(&mut self.header.bek_file_size.to_le_bytes().to_vec());
-        bek_file.append(&mut self.header.version.to_le_bytes().to_vec());
-        bek_file.append(&mut self.header.header_size.to_le_bytes().to_vec());
-        bek_file.append(&mut self.header.bek_file_size.to_le_bytes().to_vec());
-        bek_file.append(&mut self.header.protector_guid.to_bytes_le().to_vec());
-        bek_file.append(&mut self.header.nonce_counter.to_le_bytes().to_vec());
-        bek_file.append(&mut self.header.encryption_type.get().to_le_bytes().to_vec());
-        bek_file.append(&mut self.header.creation_time.array.to_vec());
-        bek_file.append(&mut self.content.content_size.to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.entry_type.get().to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.datum_type.get().to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.version.to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.external_key_guid.to_bytes_le().to_vec());
-        bek_file.append(&mut self.content.modification_time.array.to_vec());
-        bek_file.append(&mut self.content.string_size.to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.string_entry_type.get().to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.string_datum_type.get().to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.string_version.to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.string_content.encode_utf16().flat_map(|unit| unit.to_le_bytes())
-        .collect());
-        bek_file.append(&mut self.content.key_size.to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.key_entry_type.get().to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.key_datum_type.get().to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.key_version.to_le_bytes().to_vec());
-        bek_file.append(&mut (self.content.key_protector_type.get() as u32).to_le_bytes().to_vec());
-        bek_file.append(&mut self.content.key.to_vec());
+        bek_file.write_all(&mut self.header.bek_file_size.to_le_bytes());
+        bek_file.write_all(&mut self.header.version.to_le_bytes());
+        bek_file.write_all(&mut self.header.header_size.to_le_bytes());
+        bek_file.write_all(&mut self.header.bek_file_size.to_le_bytes());
+        bek_file.write_all(&mut self.header.protector_guid.to_bytes_le());
+        bek_file.write_all(&mut self.header.nonce_counter.to_le_bytes());
+        bek_file.write_all(&mut self.header.encryption_type.get().to_le_bytes());
+        bek_file.write_all(&mut self.header.creation_time.array);
+        bek_file.write_all(&mut self.content.content_size.to_le_bytes());
+        bek_file.write_all(&mut self.content.entry_type.get().to_le_bytes());
+        bek_file.write_all(&mut self.content.datum_type.get().to_le_bytes());
+        bek_file.write_all(&mut self.content.version.to_le_bytes());
+        bek_file.write_all(&mut self.content.external_key_guid.to_bytes_le());
+        bek_file.write_all(&mut self.content.modification_time.array);
+        bek_file.write_all(&mut self.content.string_size.to_le_bytes());
+        bek_file.write_all(&mut self.content.string_entry_type.get().to_le_bytes());
+        bek_file.write_all(&mut self.content.string_datum_type.get().to_le_bytes());
+        bek_file.write_all(&mut self.content.string_version.to_le_bytes());
+        bek_file.write_all(&mut self.content.string_content.encode_utf16().flat_map(|unit| unit.to_le_bytes()).collect::<Vec<u8>>());
+        bek_file.write_all(&mut self.content.key_size.to_le_bytes());
+        bek_file.write_all(&mut self.content.key_entry_type.get().to_le_bytes());
+        bek_file.write_all(&mut self.content.key_datum_type.get().to_le_bytes());
+        bek_file.write_all(&mut self.content.key_version.to_le_bytes());
+        bek_file.write_all(&mut (self.content.key_protector_type.get() as u32).to_le_bytes());
+        bek_file.write_all(&mut self.content.key);
+
+        bek_file
+    }
+
+    fn write_locally(&mut self) {
         let filename = self.header.protector_guid.to_string().to_uppercase() + ".bek";
         let new_file = File::create(filename.clone());
         match new_file {
             Ok(mut file) => {
-                if file.write_all(&bek_file).is_ok() {
+                if file.write_all(&self.to_bytes()).is_ok() {
                     println!("[r] Wrote the External Key File at ./{filename}.")
                 } else {
                     eprintln!("[!] Error encountered while writing the External Key at ./{filename}")
@@ -1017,7 +1024,7 @@ fn main() {
             if cli.startup_key {
                 let startup_key = get_startup_key(cli.vmk.clone(), &mut fve_metadata_blocks);
                 match startup_key {
-                    Some(startup_key) => {
+                    Some(mut startup_key) => {
                         println!("[r] Startup key retrieved successfully.");
                         startup_key.write_locally();
                     },

@@ -143,7 +143,7 @@ impl Volume_Master_Key_Entry {
             sub_entries_raw = sub_entries_raw[size as usize..].to_vec();
         }
 
-        Volume_Master_Key_Entry {
+        Self {
             protector_guid, 
             creation_time, 
             protector_type,
@@ -177,7 +177,7 @@ impl Aes_Ccm_Encrypted_Key {
         let mac = *entry[20..36].as_array().unwrap();
         let payload = entry[36..].to_vec();
 
-        Aes_Ccm_Encrypted_Key {
+        Self {
             nonce_date,
             nonce_counter,
             mac,
@@ -214,7 +214,7 @@ impl Stretch_Key {
             sub_entries_raw = sub_entries_raw[size as usize..].to_vec();
         }
 
-        Stretch_Key {
+        Self {
             encryption_method,
             salt,
             sub_entries
@@ -251,7 +251,7 @@ impl Use_Key {
         let encryption_type = u32::from_le_bytes(*entry[8..12].as_array().unwrap());
         let sub_entry = Box::new(FVE_Metadata_Entry::read(entry[12..].to_vec()));
 
-        Use_Key {
+        Self {
             entry_size,
             entry_type,
             datum_type,
@@ -331,7 +331,7 @@ impl FVE_Metadata_Entry {
             _ => FVEData::Raw(Raw::read(entry)),
         };
 
-        FVE_Metadata_Entry {
+        Self {
             entry_size,
             entry_type,
             datum_type,
@@ -366,7 +366,7 @@ impl FVE_Metadata_Header {
         let encryption_method = EncryptionMethod::set(u32::from_le_bytes(*fve_metadata_header_raw[36..40].as_array().unwrap()));
         let creation_time = FILETIME::from_filetime(*fve_metadata_header_raw[40..48].as_array().unwrap());
 
-        FVE_Metadata_Header {
+        Self {
             size,
             version,
             volume_guid,
@@ -427,7 +427,7 @@ impl FVE_Metadata_Block {
             }
         }
 
-        FVE_Metadata_Block { 
+        Self { 
             signature,
             validation_block_offset,
             version,
@@ -646,7 +646,8 @@ impl RecoveryPassword {
         })
         .collect();
         let pretty_print_key = format!("{:0>6}",pretty_print_key_raw.iter().format("-"));
-        RecoveryPassword { 
+
+        Self { 
             size,
             version,
             pretty_print_key,
@@ -665,22 +666,26 @@ struct BEKHeader {
     creation_time: FILETIME,
 }
 
+impl Default for BEKHeader {
+    fn default() -> Self {
+        Self {
+            bek_file_size: 0x9cu32,
+            version: 1u32,
+            header_size: 48u32,
+            protector_guid: Uuid::nil(),
+            nonce_counter: 1u32,
+            encryption_type: EncryptionMethod::set(0u32),
+            creation_time: FILETIME::from_filetime([0u8;8]),
+        }
+    }
+}
+
 impl BEKHeader {
     fn new(protector_guid: Uuid, creation_time: FILETIME) -> Self{
-        let bek_file_size = 0x9cu32;
-        let version = 1u32;
-        let header_size = 48u32;
-        let encryption_type = EncryptionMethod::NotEncrypted(0u32);
-        let nonce_counter = 1u32;
-
-        BEKHeader{
-            bek_file_size,
-            version,
-            header_size,
+        Self {
             protector_guid,
-            nonce_counter,
-            encryption_type,
             creation_time,
+            ..Default::default()
         }
     }
 }
@@ -705,41 +710,37 @@ struct BEKContent {
     key: Vec<u8>,
 }
 
+impl Default for BEKContent {
+    fn default() -> Self {
+        Self {
+            content_size: 0x6cu16,
+            entry_type: EntryType::set(6u16),
+            datum_type: DatumType::set(9u16),
+            version: 1u16,
+            external_key_guid: Uuid::nil(),
+            modification_time: FILETIME::from_filetime([0u8;8]),
+            string_size: 0x20u16,
+            string_entry_type: EntryType::set(0u16),
+            string_datum_type: DatumType::set(2u16),
+            string_version: 1u16,
+            string_content: "ExternalKey\x00".to_string(),
+            key_size: 0x2cu16,
+            key_entry_type: EntryType::set(0u16),
+            key_datum_type: DatumType::set(1u16),
+            key_version: 1u16,
+            key_protector_type:ProtectorType::set(0x2002u16),
+            key: Vec::new(),
+        }
+    }
+}
+
 impl BEKContent {
     fn new(external_key_guid: Uuid, modification_time: FILETIME, key: Vec<u8>) -> Self {
-        let content_size = 0x6cu16;
-        let entry_type = EntryType::set(6u16);
-        let datum_type = DatumType::set(9u16);
-        let version = 1u16;
-        let string_version = version;
-        let key_version = version;
-        let string_size = 0x20u16;
-        let string_entry_type = EntryType::set(0u16);
-        let string_datum_type = DatumType::set(2u16);
-        let string_content = "ExternalKey\x00".to_string();
-        let key_size =  0x2cu16;
-        let key_entry_type = EntryType::set(0u16);
-        let key_datum_type = DatumType::set(1u16);
-        let key_protector_type = ProtectorType::set(0x2002u16);
-
-        BEKContent {
-            content_size,
-            entry_type,
-            datum_type,
-            version,
+        Self {
             external_key_guid,
             modification_time,
-            string_size,
-            string_entry_type,
-            string_datum_type,
-            string_version,
-            string_content,
-            key_size, 
-            key_entry_type,
-            key_datum_type, 
-            key_version, 
-            key_protector_type, 
             key,
+            ..Default::default()
         }
     }
 }

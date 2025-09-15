@@ -668,8 +668,6 @@ struct BEKHeader {
 
 impl Default for BEKHeader {
     fn default() -> Self {
-        let var = 11_644_473_601u64.to_be_bytes();
-        println!("{:0>2x?}",var);
         Self {
             bek_file_size: 0x9cu32,
             version: 1u32,

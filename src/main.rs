@@ -18,13 +18,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::{convert::TryInto, vec};
 use std::{fmt::Write as Fmt_Write, num::ParseIntError};
 use uuid::Uuid;
-use hex::decode;
+use hex::{decode, encode};
 
 // Declare constants (needed to verify the offset found)
 const VISTA_SIGNATURE: &[u8] = b"\xeb\x52\x90-FVE-FS-";
 const SEVEN_SIGNATURE: &[u8] = b"\xeb\x58\x90-FVE-FS-";
 const TOGO_SIGNATURE: &[u8] = b"\xeb\x58\x90MSWIN4.1";
 const LB_SIZE: LogicalBlockSize = LogicalBlockSize::Lb512;
+
 // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
 const EPOCH_DIFF: u64 = 11_644_473_600;
 const HUNDRED_NS_PER_SEC: u64 = 10_000_000;
@@ -635,7 +636,7 @@ struct RecoveryPassword {
 }
 
 impl RecoveryPassword {
-    fn read(key: Vec<u8>) -> Self {
+    fn read_from_raw(key: Vec<u8>) -> Self {
         let raw_key = key[12..].to_vec();
         let size = u32::from_le_bytes(*key[0..4].as_array().unwrap());
         let version= u16::from_le_bytes(*key[4..6].as_array().unwrap());
@@ -653,6 +654,49 @@ impl RecoveryPassword {
             pretty_print_key,
             raw_key,
         }
+    }
+
+    fn read_from_string(key: String) -> Self {
+        let size= 0x1cu32;
+        let version = 0x01u16;
+        let pretty_print_key = key;
+
+        let mut raw_key = Vec::new();
+        for part in pretty_print_key.split('-') {
+            let n = part.parse::<u32>().map_err(|_| format!("Invalid number: {part}")).unwrap();
+            if n % 11 != 0 {
+                eprintln!("Value {n} not divisible by 11");
+                exit(1)
+            }
+            raw_key.extend_from_slice(&((n / 11) as u16).to_le_bytes());
+        }
+
+        Self { 
+            size,
+            version,
+            pretty_print_key,
+            raw_key,
+        }
+    }
+
+    fn get_stretch_key(&self, salt: &[u8; 16]) -> [u8; 32] {
+        let initial_sha256: [u8; 32] = *Sha256::digest(self.raw_key.clone()).as_array().unwrap();
+        let iterations: u64 = 0x100000;
+
+        let mut last_sha256 = [0u8; 32];
+        let mut buf = Vec::with_capacity(32 + 32 + 16 + 8);
+
+        for count in 0..iterations {
+            buf.clear();
+            buf.extend_from_slice(&last_sha256);
+            buf.extend_from_slice(&initial_sha256);
+            buf.extend_from_slice(salt);
+            buf.extend_from_slice(&count.to_le_bytes());
+
+            last_sha256 = *Sha256::digest(buf.clone()).as_array().unwrap();
+        }
+
+        last_sha256
     }
 }
 
@@ -816,29 +860,33 @@ impl StartupKey {
     long_about = "Key Protectors retrieval tool using a VMK and metadata from a disk."
 )]
 struct Cli {
-    /// VMK, key used to decrypt key protectors.
-    #[arg(short, long, value_name = "Key", default_value_t = String::from("7e63180cb55e15fa62ff4a2cac1bec4ca2ae145b8b92b59b8674e1f2169bcc8d"))]
-    vmk: String,
+    /// Provide a VMK, key used to decrypt key protectors.
+    #[arg(short='v', long, value_name = "VMK", default_value_t = String::from("7e63180cb55e15fa62ff4a2cac1bec4ca2ae145b8b92b59b8674e1f2169bcc8d"))]
+    set_vmk: String,
+
+    /// Provide a Recovery Password, used to decrypt the VMK.
+    #[arg(short='r', long, value_name = "Recovery Password", default_value_t = String::from("662541-305338-715132-468501-427427-072490-031625-089089"))]
+    set_recovery_password: String,
+
+    /// Retrieves the VMK using the provided Recovery Password.
+    #[arg(long)]
+    get_vmk: bool,
 
     /// Retrieves the Recovery Password using the provided VMK.
-    #[arg(short, long)]
-    recovery_password: bool,
+    #[arg(long)]
+    get_recovery_password: bool,
 
     /// Retrieves the Startup Key using the provided VMK.
-    #[arg(short, long)]
-    startup_key: bool,
+    #[arg(long)]
+    get_external_key: bool,
 
     /// Disk from which Key Protectors are retrieved.
     #[arg(required = true, short, long, value_name = "DISKPATH")]
     disk: Option<String>,
 
-    /// Create BEK (BitLocker External Key) file if the Key Protector is configured on the provided disk.
-    #[arg(short, long)]
-    bek: bool,
-
     /// Add BEK (BitLocker External Key) to the provided disk. WARNING : DO NOT USE UNLESS YOU DON'T CARE ABOUT BREAKING THE TARGET DISK (This means make backups).
-    #[arg(short, long)]
-    addbek: bool,
+    #[arg(short='e', long)]
+    set_external_key: bool,
 }
 
 // AES-256-CCM init
@@ -948,6 +996,31 @@ fn aes_ccm_entry_decrypt(key: Vec<u8>, entry: &Aes_Ccm_Encrypted_Key) -> Result<
     decrypted
 }
 
+fn get_volume_master_key(recovery_password_string: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block>) -> Option<String> {
+    let mut volume_master_key: Option<String> = Option::None;
+    let recovery_password = RecoveryPassword::read_from_string(recovery_password_string);
+    for entry in fve_metadata_blocks[0].clone().fve_metadata_entries[0..].to_vec() {
+        match entry.data {
+            FVEData::VolumeMasterKeyEntry(data) => {
+                if data.protector_type == ProtectorType::RecoveryPassword(0x0800u16) {
+                    let volume_master_key_entry = data.sub_entries[1].data.try_as_aes_ccm_data().unwrap();
+                    let salt = data.sub_entries[0].data.try_as_stretch_key().unwrap().salt;
+                    let stretch_key = recovery_password.get_stretch_key(&salt);
+                    let decrypted = aes_ccm_entry_decrypt(stretch_key.to_vec(), volume_master_key_entry);
+                    if decrypted.is_ok() {
+                        volume_master_key = Some(hex::encode(decrypted.unwrap()[12..].to_vec()));
+                    } else {
+                        eprintln!("[!] Failed to decrypt the VMK found.");
+                        exit(1);
+                    }
+                } 
+            },
+            _ => {continue}
+        };
+    }
+    volume_master_key
+}
+
 fn get_recovery_password(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block>) -> Option<RecoveryPassword> {
     let mut recovery_password: Option<RecoveryPassword> = Option::None;
     for entry in fve_metadata_blocks[0].clone().fve_metadata_entries[0..].to_vec() {
@@ -958,7 +1031,7 @@ fn get_recovery_password(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata
                     let vmk_bytes = decode(&vmk).unwrap_or_default();
                     let decrypted = aes_ccm_entry_decrypt(vmk_bytes, recovery_password_entry);
                     if decrypted.is_ok() {
-                        recovery_password = Some(RecoveryPassword::read(decrypted.unwrap()));
+                        recovery_password = Some(RecoveryPassword::read_from_raw(decrypted.unwrap()));
                     } else {
                         eprintln!("[!] Failed to decrypt the recovery password found.");
                         exit(1);
@@ -994,6 +1067,10 @@ fn get_startup_key(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block
     startup_key
 }
 
+fn put_startup_key() {
+
+}
+
 fn main() {
     let cli = Cli::parse();
     let disk = cli.disk.clone();
@@ -1012,21 +1089,28 @@ fn main() {
                 find_fve_metadata_blocks(disk, &mut file);
             let mut fve_metadata_blocks =
                 parse_fve_metadata_blocks(offsets_fve_metdata_blocks, &mut file);
-            if cli.recovery_password {
-                let recovery_password = get_recovery_password(cli.vmk.clone(), &mut fve_metadata_blocks);
+            if cli.get_vmk {
+                let volume_master_key = get_volume_master_key(cli.set_recovery_password.clone(), &mut fve_metadata_blocks);
+                match volume_master_key {
+                    Some(volume_master_key) => println!("[i] Volume Master Key retrieved successfully:\n\t{}",volume_master_key),
+                    None => eprintln!("[r] No Volume Master Key retrieved."),
+                };
+            }
+            if cli.get_recovery_password {
+                let recovery_password = get_recovery_password(cli.set_vmk.clone(), &mut fve_metadata_blocks);
                 match recovery_password {
                     Some(recovery_password) => println!("[i] Recovery password retrieved successfully:\n\t{}",recovery_password.pretty_print_key),
                     None => eprintln!("[r] No recovery password retrieved."),
                 };
             } 
-            if cli.startup_key {
-                let startup_key = get_startup_key(cli.vmk.clone(), &mut fve_metadata_blocks);
+            if cli.get_external_key {
+                let startup_key = get_startup_key(cli.set_vmk.clone(), &mut fve_metadata_blocks);
                 match startup_key {
                     Some(mut startup_key) => {
                         println!("[r] Startup key retrieved successfully.");
                         startup_key.write_locally();
                     },
-                    None => eprintln!("[!] No recovery password retrieved."),
+                    None => eprintln!("[!] No startup key retrieved."),
                 };
             }
         }

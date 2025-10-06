@@ -25,6 +25,15 @@ const VISTA_SIGNATURE: &[u8] = b"\xeb\x52\x90-FVE-FS-";
 const SEVEN_SIGNATURE: &[u8] = b"\xeb\x58\x90-FVE-FS-";
 const TOGO_SIGNATURE: &[u8] = b"\xeb\x58\x90MSWIN4.1";
 const LB_SIZE: LogicalBlockSize = LogicalBlockSize::Lb512;
+const EXTERNAL_KEY_HEADER_TEMPLATE: [u8; 12] = [
+    0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x20, 0x00, 0x00,
+];
+const VMK_HEADER_TEMPLATE: [u8; 12] = [
+    0x2c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x20, 0x00, 0x00,
+];
+const CUSTOM_EXTERNAL_KEY_GUID: Uuid = Uuid::from_bytes_le([
+    0x50, 0x6f, 0x6f, 0x6b, 0x79, 0x27, 0x20, 0x77, 0x61, 0x73, 0x20, 0x68, 0x65, 0x72, 0x65, 0x21,
+]);
 
 // Difference in seconds between 1601-01-01 and 1970-01-01 (thank you windows)
 const EPOCH_DIFF: u64 = 11_644_473_600;
@@ -65,6 +74,10 @@ trait Describe {
     fn describe(&self) -> String;
 }
 
+trait AsRaw {
+    fn as_raw(&self) -> Vec<u8>;
+}
+
 #[derive(Clone)]
 enum FVEData {
     VolumeMasterKeyEntry(Volume_Master_Key_Entry),
@@ -102,6 +115,19 @@ impl FVEData {
             Some(&data)
         } else {
             None
+        }
+    }
+}
+
+impl AsRaw for FVEData {
+    fn as_raw(&self) -> Vec<u8> {
+        match self {
+            FVEData::VolumeMasterKeyEntry(vmk_entry) => vmk_entry.as_raw(),
+            FVEData::StretchKey(stretch_key) => stretch_key.as_raw(),
+            FVEData::UseKey(use_key) => use_key.as_raw(),
+            FVEData::AesCcmEncryptedKey(aes_ccm_encrypted_key) => aes_ccm_encrypted_key.as_raw(),
+            FVEData::Description(description) => description.as_raw(),
+            FVEData::Raw(raw) => raw.as_raw(),
         }
     }
 }
@@ -151,6 +177,15 @@ impl Volume_Master_Key_Entry {
             sub_entries
         }
     }
+
+    fn new(protector_guid: Uuid, creation_time: FILETIME, protector_type: ProtectorType, sub_entries: Vec<Box<FVE_Metadata_Entry>>) -> Self {
+        Self {
+            protector_guid, 
+            creation_time, 
+            protector_type,
+            sub_entries
+        }
+    }
 }
 
 impl Describe for Volume_Master_Key_Entry {
@@ -163,21 +198,45 @@ impl Describe for Volume_Master_Key_Entry {
     }
 }
 
+impl AsRaw for Volume_Master_Key_Entry {
+    fn as_raw(&self) -> Vec<u8> {
+        let mut raw_entry = Vec::new();
+        raw_entry.append(&mut self.protector_guid.to_bytes_le().to_vec());
+        raw_entry.append(&mut self.creation_time.array.to_vec());
+        raw_entry.append(&mut vec![0x00,0x00]);
+        raw_entry.append(&mut self.protector_type.get().to_le_bytes().to_vec());
+        for sub_entry in self.sub_entries.clone() {
+            raw_entry.append(&mut sub_entry.as_raw());
+        };
+
+        raw_entry
+    }
+}
+
 #[derive(Clone)]
 struct Aes_Ccm_Encrypted_Key {
-    nonce_date: [u8;8],
-    nonce_counter: [u8;4],
+    nonce_date: FILETIME,
+    nonce_counter: u32,
     mac: [u8;16],
     payload: Vec<u8>,
 }
 
 impl Aes_Ccm_Encrypted_Key {
     fn read(entry: Vec<u8>) -> Self {
-        let nonce_date= *entry[8..16].as_array().unwrap();
-        let nonce_counter = *entry[16..20].as_array().unwrap();
+        let nonce_date= FILETIME::from_filetime(*entry[8..16].as_array().unwrap());
+        let nonce_counter = u32::from_le_bytes(*entry[16..20].as_array().unwrap());
         let mac = *entry[20..36].as_array().unwrap();
         let payload = entry[36..].to_vec();
 
+        Self {
+            nonce_date,
+            nonce_counter,
+            mac,
+            payload
+        }
+    }
+
+    fn new(nonce_date: FILETIME, nonce_counter: u32, mac: [u8; 16], payload: Vec<u8>) -> Self {
         Self {
             nonce_date,
             nonce_counter,
@@ -189,7 +248,19 @@ impl Aes_Ccm_Encrypted_Key {
 
 impl Describe for Aes_Ccm_Encrypted_Key {
     fn describe(&self) -> String {
-        format!("[i] Nonce date : {:0>2x?}\n[i] Nonce counter : {:0>2x?}\n[i] MAC (or tag) : {:0>2x?}\n[i] Payload : {:0>2x?}", self.nonce_date, self.nonce_counter, self.mac, self.payload)
+        format!("[i] Nonce date : {}\n[i] Nonce counter : {:0>2x?}\n[i] MAC (or tag) : {:0>2x?}\n[i] Payload : {:0>2x?}", self.nonce_date.timestamp, self.nonce_counter, self.mac, self.payload)
+    }
+}
+
+impl AsRaw for Aes_Ccm_Encrypted_Key {
+    fn as_raw(&self) -> Vec<u8> {
+        let mut raw_entry = Vec::new();
+        raw_entry.append(&mut self.nonce_date.array.to_vec());
+        raw_entry.append(&mut self.nonce_counter.to_le_bytes().to_vec());
+        raw_entry.append(&mut self.mac.to_vec());
+        raw_entry.append(&mut self.payload.to_vec());
+
+        raw_entry
     }
 }
 
@@ -233,30 +304,54 @@ impl Describe for Stretch_Key {
     }
 }
 
+impl AsRaw for Stretch_Key {
+    fn as_raw(&self) -> Vec<u8> {
+        let mut raw_entry = Vec::new();
+        raw_entry.append(&mut self.encryption_method.get().to_le_bytes().to_vec());
+        raw_entry.append(&mut self.salt.to_vec());
+        for sub_entry in self.sub_entries.clone() {
+            raw_entry.append(&mut sub_entry.as_raw());
+        };
+
+        raw_entry
+    }
+}
+
 #[derive(Clone)]
 struct Use_Key {
-    entry_size: u16,
-    entry_type: EntryType,
-    datum_type: DatumType,
-    version: u16,
-    encryption_type: u32,
+    encryption_type: EncryptionMethod,
+    //entry_size: u16,
+    //entry_type: EntryType,
+    //datum_type: DatumType,
+    //version: u16,
     sub_entry: Box<FVE_Metadata_Entry>,
 }
 
 impl Use_Key {
     fn read(entry: Vec<u8>) -> Self {
-        let entry_size = u16::from_le_bytes(*entry[0..2].as_array().unwrap());
-        let entry_type = EntryType::set(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
-        let datum_type = DatumType::set(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
-        let version = u16::from_le_bytes(*entry[6..8].as_array().unwrap());
-        let encryption_type = u32::from_le_bytes(*entry[8..12].as_array().unwrap());
+        //let entry_size = u16::from_le_bytes(*entry[0..2].as_array().unwrap());
+        //let entry_type = EntryType::set(u16::from_le_bytes(*entry[2..4].as_array().unwrap()));
+        //let datum_type = DatumType::set(u16::from_le_bytes(*entry[4..6].as_array().unwrap()));
+        //let version = u16::from_le_bytes(*entry[6..8].as_array().unwrap());
+        let encryption_type = EncryptionMethod::set(u32::from_le_bytes(*entry[8..12].as_array().unwrap()));
         let sub_entry = Box::new(FVE_Metadata_Entry::read(entry[12..].to_vec()));
 
         Self {
-            entry_size,
-            entry_type,
-            datum_type,
-            version,
+            //entry_size,
+            //entry_type,
+            //datum_type,
+            //version,
+            encryption_type,
+            sub_entry,
+        }
+    }
+
+    fn new(entry_size: u16, entry_type: EntryType, datum_type: DatumType, version: u16, encryption_type: EncryptionMethod, sub_entry: Box<FVE_Metadata_Entry>) -> Self {
+        Self {
+            //entry_size,
+            //entry_type,
+            //datum_type,
+            //version,
             encryption_type,
             sub_entry,
         }
@@ -265,7 +360,21 @@ impl Use_Key {
 
 impl Describe for Use_Key {
     fn describe(&self) -> String {
-        format!("[i] Entry Size : 0x{:0>4x}\n[i] Entry Type : {:?}\n[i] Datum Type : {:?}\n[i] Version : {}\n[i] Encryption type : 0x{:0>8x?}\n[i] Data :\n{}",self.entry_size, self.entry_type, self.datum_type, self.version, self.encryption_type, self.sub_entry.describe())
+        format!("[i] Encryption type : {:?}\n[i] Data :\n{}", self.encryption_type, self.sub_entry.describe())
+    }
+}
+
+impl AsRaw for Use_Key {
+    fn as_raw(&self) -> Vec<u8> {
+        let mut raw_entry = Vec::new();
+        //raw_entry.append(&mut self.entry_size.to_le_bytes().to_vec());
+        //raw_entry.append(&mut self.entry_type.get().to_le_bytes().to_vec());
+        //raw_entry.append(&mut self.datum_type.get().to_le_bytes().to_vec());
+        //raw_entry.append(&mut self.version.to_le_bytes().to_vec());
+        raw_entry.append(&mut self.encryption_type.get().to_le_bytes().to_vec());
+        raw_entry.append(&mut self.sub_entry.as_raw());
+
+        raw_entry
     }
 }
 
@@ -276,7 +385,7 @@ struct Description {
 
 impl Description {
     fn read(description: String) -> Self {
-        Description {  
+        Self {  
             description
         }
     }
@@ -285,6 +394,12 @@ impl Description {
 impl Describe for Description {
     fn describe(&self) -> String {
         format!("[i] Description : {}", self.description)
+    }
+}
+
+impl AsRaw for Description {
+    fn as_raw(&self) -> Vec<u8> {
+        self.description.encode_utf16().flat_map(|unit| unit.to_le_bytes()).collect::<Vec<u8>>()
     }
 }
 
@@ -304,6 +419,12 @@ impl Raw {
 impl Describe for Raw {
     fn describe(&self) -> String {
         format!("[i] Raw data : {:0>2x?}",self.content)
+    }
+}
+
+impl AsRaw for Raw {
+    fn as_raw(&self) -> Vec<u8> {
+        self.content.to_vec()
     }
 }
 
@@ -340,11 +461,129 @@ impl FVE_Metadata_Entry {
             data,
         }
     }
+
+    fn as_raw(&self) -> Vec<u8> {
+        let mut raw_entry = Vec::new();
+        raw_entry.append(&mut self.entry_size.to_le_bytes().to_vec());
+        raw_entry.append(&mut self.entry_type.get().to_le_bytes().to_vec());
+        raw_entry.append(&mut self.datum_type.get().to_le_bytes().to_vec());
+        raw_entry.append(&mut self.version.to_le_bytes().to_vec());
+        raw_entry.append(&mut self.data.as_raw());
+
+        raw_entry
+    }
+
+    fn new_external_key(vmk: String, next_nonce_counter: u32) -> Self {
+        let entry_size = 0xf0u16;
+        let entry_type = EntryType::set(2);
+        let datum_type = DatumType::set(8);
+        let version = 0x01u16;
+        let mut sub_entries = Vec::new();
+        let external_key = Aes256Ccm::generate_key(&mut OsRng);
+
+        let now = FILETIME::from_unix(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        );
+
+        // Create entry string
+        sub_entries.push(Box::new(FVE_Metadata_Entry::new_string("ExternalKey\x00".to_string())));
+
+
+        // Create entry with the new and encrypted startup key 
+        let cipher_external_key = Aes256Ccm::new_from_slice(&hex::decode(vmk.clone()).unwrap()).unwrap();
+        let nonce_bytes_external_key = [now.array, (next_nonce_counter as u64).to_le_bytes()].concat()[0..12].to_vec();
+        let nonce_and_counter_external_key: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_external_key);
+        let payload_external_key = [EXTERNAL_KEY_HEADER_TEMPLATE.to_vec(), external_key.to_vec()].concat();
+        let ciphertext_external_key = cipher_external_key.encrypt(nonce_and_counter_external_key, payload_external_key.as_ref());
+        let encrypted_external_key = ciphertext_external_key.clone().unwrap()
+            [0..ciphertext_external_key.clone().unwrap().len() - 16]
+            .to_vec();
+        let mac_external_key = ciphertext_external_key.clone().unwrap()
+            [ciphertext_external_key.clone().unwrap().len() - 16..ciphertext_external_key.unwrap().len()]
+            .to_vec();
+        sub_entries.push(Box::new(FVE_Metadata_Entry::new_use_key(Box::new(FVE_Metadata_Entry::new_aes_ccm_encrypted_key(Aes_Ccm_Encrypted_Key::new(now.clone(), next_nonce_counter, *mac_external_key.as_array().unwrap(), encrypted_external_key))))));
+
+
+        // Create entry with the VMK encrypted using the startup key 
+        let cipher_vmk = Aes256Ccm::new(&external_key);
+        let nonce_bytes_vmk = [now.array, ((next_nonce_counter as u64)+ 1).to_le_bytes()].concat()[0..12].to_vec();
+        let nonce_and_counter_vmk: &GenericArray<_, U12> = GenericArray::from_slice(&nonce_bytes_vmk);
+        let payload_vmk = [VMK_HEADER_TEMPLATE.to_vec(), hex::decode(vmk.clone()).unwrap()].concat();
+        let ciphertext_vmk = cipher_vmk.encrypt(nonce_and_counter_vmk, payload_vmk.as_ref());
+        let encrypted_vmk = ciphertext_vmk.clone().unwrap()
+            [0..ciphertext_vmk.clone().unwrap().len() - 16]
+            .to_vec();
+        let mac_vmk = ciphertext_vmk.clone().unwrap()
+            [ciphertext_vmk.clone().unwrap().len() - 16..ciphertext_vmk.unwrap().len()]
+            .to_vec();
+        sub_entries.push(Box::new(FVE_Metadata_Entry::new_aes_ccm_encrypted_key(Aes_Ccm_Encrypted_Key::new(now.clone(), next_nonce_counter+1, *mac_vmk.as_array().unwrap(), encrypted_vmk))));
+
+        let data: FVEData = FVEData::VolumeMasterKeyEntry(Volume_Master_Key_Entry::new(CUSTOM_EXTERNAL_KEY_GUID, now, ProtectorType::set(0x0200), sub_entries));
+
+        Self {
+            entry_size,
+            entry_type,
+            datum_type,
+            version,
+            data,
+        }
+    }
+
+    fn new_string(string: String) -> Self {
+        let entry_size = (string.encode_utf16().flat_map(|unit| unit.to_le_bytes()).collect::<Vec<u8>>().len() as u16) + 8u16;
+        let entry_type = EntryType::set(0);
+        let datum_type = DatumType::set(2);
+        let version = 0x01u16;
+        let data= FVEData::Description(Description::read(string));
+
+        Self {
+            entry_size,
+            entry_type,
+            datum_type,
+            version,
+            data,
+        }
+    }
+
+    fn new_use_key(sub_entry: Box<FVE_Metadata_Entry>) -> Self {
+        let entry_size = 0x5cu16;
+        let entry_type = EntryType::set(0);
+        let datum_type = DatumType::set(4);
+        let version = 0x01u16;
+        let data= FVEData::UseKey(Use_Key::new(0x50, EntryType::set(0), DatumType::set(5),1u16, EncryptionMethod::set(0x2002),  sub_entry));
+
+        Self {
+            entry_size,
+            entry_type,
+            datum_type,
+            version,
+            data,
+        }
+    }
+
+    fn new_aes_ccm_encrypted_key(entry: Aes_Ccm_Encrypted_Key) -> Self {
+        let entry_size = 0x50u16;
+        let entry_type = EntryType::set(0);
+        let datum_type = DatumType::set(5);
+        let version = 0x01u16;
+        let data = FVEData::AesCcmEncryptedKey(entry);
+
+        Self {
+            entry_size,
+            entry_type,
+            datum_type,
+            version,
+            data,
+        }
+    }
 }
 
 impl Describe for FVE_Metadata_Entry {
     fn describe(&self) -> String {
-        format!("[i] Entry Size : 0x{:0>4x}\n[i] Entry Type : {:?}\n[i] Datum Type : {:?}\n[i] Version : {}\n[i] Data :\n{}",self.entry_size, self.entry_type, self.datum_type, self.version, self.data.describe())
+        format!("[i] Entry Size : 0x{:0>4x}\n[i] Entry Type : {:?}\n[i] Datum Type : {:?}\n[i] Version : {}\n[i] Data :\n{}\n",self.entry_size, self.entry_type, self.datum_type, self.version, self.data.describe())
     }
 }
 
@@ -988,7 +1227,7 @@ fn parse_fve_metadata_blocks(
 
 fn aes_ccm_entry_decrypt(key: Vec<u8>, entry: &Aes_Ccm_Encrypted_Key) -> Result<Vec<u8>, Error>{
     let cipher = Aes256Ccm::new_from_slice(&key).unwrap();
-    let binding = &*[entry.nonce_date.to_vec(), entry.nonce_counter.to_vec()].concat();
+    let binding = &*[entry.nonce_date.array.to_vec(), entry.nonce_counter.to_le_bytes().to_vec()].concat();
     let nonce_bytes: &GenericArray<_, U12> = GenericArray::from_slice(binding);
     let payload_mac = &*[entry.payload.to_vec(), entry.mac.to_vec()].concat();
     let decrypted = cipher.decrypt(nonce_bytes, payload_mac);
@@ -1050,7 +1289,7 @@ fn get_startup_key(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block
         match entry.clone().data {
             FVEData::VolumeMasterKeyEntry(data) => {
                 if data.protector_type == ProtectorType::StartupKey(0x0200) {
-                    let startup_key_entry = data.sub_entries[1].data.try_as_use_key().unwrap().sub_entry.data.try_as_aes_ccm_data().unwrap();
+                    let startup_key_entry = &data.sub_entries[1].data.try_as_use_key().unwrap().sub_entry.data.try_as_aes_ccm_data().unwrap();
                     let vmk_bytes = decode(&vmk).unwrap_or_default();
                     let decrypted = aes_ccm_entry_decrypt(vmk_bytes, startup_key_entry);
                     if decrypted.is_ok() {
@@ -1067,7 +1306,23 @@ fn get_startup_key(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block
     startup_key
 }
 
-fn put_startup_key() {
+fn put_startup_key(vmk: String, fve_metadata_blocks: &mut Vec<FVE_Metadata_Block>) {
+    let next_nonce_counter = fve_metadata_blocks[0].fve_metadata_header.next_nonce_counter;
+    let new_startup_key_entry = FVE_Metadata_Entry::new_external_key(vmk, next_nonce_counter);
+    
+    // Add the new entry to each block
+    for fve_metadata_block in fve_metadata_blocks {
+        fve_metadata_block.fve_metadata_entries.insert(fve_metadata_block.fve_metadata_entries.len()-1, new_startup_key_entry.clone());
+    }
+
+    // TODO 
+    // Write the new entry
+    println!("{:0>2x?}",new_startup_key_entry.as_raw());
+
+    // Rewrite the last entry
+
+    
+    // Generate the new validation entry
 
 }
 
@@ -1103,6 +1358,9 @@ fn main() {
                     None => eprintln!("[r] No recovery password retrieved."),
                 };
             } 
+            if cli.set_external_key {
+                put_startup_key(cli.set_vmk.clone(), &mut fve_metadata_blocks);
+            }
             if cli.get_external_key {
                 let startup_key = get_startup_key(cli.set_vmk.clone(), &mut fve_metadata_blocks);
                 match startup_key {
